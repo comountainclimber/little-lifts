@@ -1,0 +1,24 @@
+config_version=5
+
+[application]
+config/name="Little Lifts"
+config/description="Cut trails through the pines and grow a little ski village into a mountain resort."
+config/icon="res://demo/icon.png"
+boot_splash/show_image=false
+boot_splash/bg_color=Color(0.68, 0.7, 0.82, 1)
+run/max_fps=60
+run/main_scene="res://demo/main.tscn"
+config/features=PackedStringArray("4.7", "Mobile")
+
+[display]
+window/size/viewport_width=1280
+window/size/viewport_height=800
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+
+[rendering]
+renderer/rendering_method="mobile"
+renderer/rendering_method.web="gl_compatibility"
+anti_aliasing/quality/msaa_3d=2
+lights_and_shadows/directional_shadow/size=4096
+textures/vram_compression/import_etc2_astc=true

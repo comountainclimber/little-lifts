@@ -1,0 +1,17 @@
+[gd_resource type="Theme" format=3]
+
+[ext_resource type="FontFile" path="res://demo/browser_fonts/Barlow-Regular.ttf" id="Body"]
+[ext_resource type="FontFile" path="res://demo/browser_fonts/BarlowCondensed-Bold.ttf" id="Sign"]
+
+[resource]
+default_font = ExtResource("Body")
+Button/fonts/font = ExtResource("Body")
+ContextLabel/fonts/font = ExtResource("Sign")
+Guidance/fonts/font = ExtResource("Body")
+Key/fonts/font = ExtResource("Body")
+ActiveKey/fonts/font = ExtResource("Body")
+Location/fonts/font = ExtResource("Body")
+Masthead/fonts/font = ExtResource("Sign")
+Masthead/font_sizes/font_size = 31
+OptionButton/fonts/font = ExtResource("Body")
+RailTool/fonts/font = ExtResource("Body")

@@ -1,0 +1,15 @@
+{
+  "framework": null,
+  "installCommand": "",
+  "buildCommand": "",
+  "outputDirectory": "website",
+  "trailingSlash": true,
+  "headers": [
+    {
+      "source": "/play/engine-:hash.gz.bin",
+      "headers": [
+        {"key": "Cache-Control", "value": "public, max-age=31536000, immutable"}
+      ]
+    }
+  ]
+}

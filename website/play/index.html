@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#192f36">
+  <title>Play Little Lifts</title>
+  <link id="-gd-engine-icon" rel="icon" type="image/png" href="index.icon.png" />
+<link rel="apple-touch-icon" href="index.apple-touch-icon.png"/>
+
+  <style>
+    :root{color-scheme:dark;font-family:system-ui,sans-serif;background:#192f36;color:#f6f7ec}
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;overflow:hidden}
+    canvas{display:block;width:100%;height:100%;outline:none;touch-action:none}
+    #loading{position:fixed;inset:0;display:grid;place-items:center;background:#192f36}
+    #loading[hidden],#retry[hidden]{display:none}
+    .panel{width:min(21rem,calc(100% - 3rem));text-align:left}
+    #mark{width:2.75rem;height:2.75rem}
+    h1{margin:.75rem 0 .2rem;font-size:clamp(2rem,7vw,3rem);letter-spacing:-.045em;line-height:1.05}
+    #message{min-height:2.8em;color:#cedad9;line-height:1.5}
+    progress{appearance:none;display:block;width:100%;height:4px;border:0;background:#3b5359;accent-color:#f2b66e}
+    progress::-webkit-progress-bar{background:#3b5359}
+    progress::-webkit-progress-value{background:#f2b66e}
+    progress::-moz-progress-bar{background:#f2b66e}
+    #home{position:absolute;top:max(1rem,env(safe-area-inset-top));left:max(1.2rem,env(safe-area-inset-left));color:#cedad9;text-decoration:none;font-size:.9rem}
+    #home:hover,#home:focus-visible{color:#f2b66e}
+    #retry{border:0;border-radius:3px;padding:.6rem 1.1rem;background:#f2b66e;color:#192f36;font:600 .95rem system-ui;cursor:pointer}
+    :focus-visible{outline:2px solid #f2b66e;outline-offset:4px}
+  </style>
+</head>
+<body>
+  <canvas id="canvas" tabindex="0" aria-label="Little Lifts ski resort"></canvas>
+  <main id="loading">
+    <a id="home" href="../">← Little Lifts home</a>
+    <div class="panel">
+      <svg id="mark" viewBox="0 0 48 48" aria-hidden="true"><rect width="48" height="48" rx="5" fill="#f2b66e"/><g fill="none" stroke="#183339" stroke-linejoin="round" stroke-linecap="round" stroke-width="3"><path d="m5 17 38-9M21 14l1 5 4 4m-4-3c5-1 9 2 11 6l2 4c1 2 0 4-3 5l-12 2c-3 1-4-1-5-3l-1-5c0-5 2-8 6-9z"/><path d="m16 29 17-4m-10-4 1 6"/></g></svg>
+      <h1>Little Lifts</h1>
+      <p id="message" role="status">Loading the mountain…</p>
+      <progress id="progress" aria-label="Game download"></progress>
+      <button id="retry" type="button" hidden>Try again</button>
+      <noscript>Enable JavaScript to play Little Lifts.</noscript>
+    </div>
+  </main>
+  <script src="index.js"></script>
+  <script>
+    const config = {"args":[],"canvasResizePolicy":2,"emscriptenPoolSize":8,"ensureCrossOriginIsolationHeaders":true,"executable":"index","experimentalVK":false,"fileSizes":{"index.pck":547032,"index.wasm":39514754},"focusCanvas":true,"gdextensionLibs":[],"godotPoolSize":4};
+    const canvas = document.getElementById('canvas');
+    const message = document.getElementById('message');
+    const progress = document.getElementById('progress');
+    const retry = document.getElementById('retry');
+    retry.addEventListener('click', () => location.reload());
+    function showError(detail) {
+      message.textContent = detail;
+      progress.hidden = true;
+      progress.style.display = 'none';
+      retry.hidden = false;
+    }
+    async function start() {
+      if (typeof Engine !== 'function') throw new Error('The game engine could not be downloaded. Check your connection and try again.');
+      if (!window.DecompressionStream) throw new Error('This browser is missing streaming decompression. Open Little Lifts in a current version of Chrome, Edge, Firefox, or Safari.');
+      const missing = Engine.getMissingFeatures({threads: false});
+      if (missing.length) throw new Error('This browser is missing ' + missing.join(', ') + '. Enable hardware acceleration or try a current browser.');
+      const engine = new Engine(config);
+      await engine.startGame({canvas, onProgress(loaded, total) {
+        if (total > 0) { progress.max = total; progress.value = loaded; }
+        if (total > 0 && loaded >= total) message.textContent = 'Starting the lifts…';
+      }});
+      requestAnimationFrame(() => {
+        document.getElementById('loading').hidden = true;
+        canvas.focus({preventScroll:true});
+        performance.mark('little-lifts-ready');
+        window.littleLiftsReady = true;
+      });
+    }
+    start().catch(error => { console.error(error); showError(error.message || 'The mountain could not be opened. Please try again.'); });
+  </script>
+</body>
+</html>
+
