@@ -2,6 +2,7 @@ extends Node3D
 
 const RiderStyle := preload("res://skiing/rider_style.gd")
 const Snowboard := preload("res://skiing/snowboard.gd")
+const Outfit := preload("res://skiing/rider_outfit.gd")
 const TurnSpray := preload("res://skiing/turn_spray.gd")
 
 var board: Snowboard
@@ -48,58 +49,44 @@ func build(jacket: Color, variant: int) -> void:
 		_orb.radial_segments = 10
 		_orb.rings = 5
 	_variant = variant
-	var ink := Color("#243c51")
-	var navy := Color("#36475c")
-	var glove := Color("#333d4d")
-	var trim := Color("#ffdfa1") if posmod(variant, 2) == 0 else Color("#a1d1cc")
-
+	var trim := Color("#edc77c") if posmod(variant,2)==0 else Color("#95c2bb")
 	add_child(hips)
 	hips.position.y = 0.36
 	hips.add_child(chest)
 	chest.position.y = 0.01
-	_piece(chest, _orb, Vector3(0, 0.13, -0.015), Vector3(0.36, 0.37, 0.24), jacket)
-	var face := chest
-	var neck_offset := Vector3.ZERO
+	_dressed_part(chest,Outfit.jacket(jacket),"Ski jacket")
+	_neck = Node3D.new()
+	_neck.name = "Neck"
+	chest.add_child(_neck)
+	_neck.position = Vector3(0,0.278,-0.032)
+	_dressed_part(_neck,Outfit.head(trim,variant),"Helmet and goggles")
 	if RiderStyle.is_boarder(variant):
 		_stance = RiderStyle.toe_side(variant)
 		board = Snowboard.new()
 		board.name = "Snowboard"
 		add_child(board)
-		board.build(self, _stance)
-		_neck = Node3D.new()
-		chest.add_child(_neck)
-		neck_offset = Vector3(0, 0.31, -0.035)
-		_neck.position = neck_offset
-		face = _neck
-	_piece(face, _orb, Vector3(0, 0.37, -0.06) - neck_offset, Vector3(0.215, 0.235, 0.22), Color("#d59776"))
-	_piece(face, _orb, Vector3(0, 0.42, -0.055) - neck_offset, Vector3(0.25, 0.19, 0.245), trim)
-	_piece(face, _box, Vector3(0, 0.37, -0.147) - neck_offset, Vector3(0.19, 0.064, 0.043), ink)
-
-	for side in [-1.0, 1.0]:
+		board.build(self,_stance)
+	for side:float in [-1.0,1.0]:
 		if board == null:
-			var leg_x: float = side * 0.12
 			var deck := Node3D.new()
 			add_child(deck)
-			deck.position.x = leg_x
+			deck.position.x = side*0.12
 			ski_decks.append(deck)
-			_piece(deck, _box, Vector3(0, 0.032, 0.025), Vector3(0.095, 0.044, 0.91), ink)
-			var tip := _piece(deck, _box, Vector3(0, 0.059, -0.464), Vector3(0.09, 0.04, 0.11), trim)
-			tip.rotation.x = 0.40
-			_piece(deck, _box, Vector3(0, 0.098, -0.012), Vector3(0.11, 0.12, 0.20), glove)
-		shins.append(_piece(self, _box, Vector3.ZERO, Vector3.ONE, navy))
-		thighs.append(_piece(self, _box, Vector3.ZERO, Vector3.ONE, navy))
-
+			_dressed_part(deck,Outfit.ski(trim),"Ski and boot")
+		shins.append(_dressed_part(self,Outfit.trousers(false),"Lower leg"))
+		thighs.append(_dressed_part(self,Outfit.trousers(true),"Upper leg"))
 		var arm := Node3D.new()
 		chest.add_child(arm)
-		arm.position = Vector3(side * 0.145, 0.215, -0.018)
+		arm.position = Vector3(side*0.132,0.204,-0.010)
 		arms.append(arm)
-		var sleeve := _piece(arm, _orb, Vector3(side * 0.042, -0.076, -0.035), Vector3(0.12, 0.22, 0.135), jacket)
-		sleeve.rotation.z = side * 0.39
-		_piece(arm, _orb, Vector3(side * 0.068, -0.16, -0.10), Vector3(0.087, 0.087, 0.095), glove)
-		if board == null:
-			var pole := _piece(arm, _box, Vector3(side * 0.105, -0.32, 0.045), Vector3(0.018, 0.46, 0.018), ink)
-			pole.rotation.x = -0.72
-			pole.rotation.z = side * 0.16
+		_dressed_part(arm,Outfit.sleeve(side,jacket,board!=null),"Sleeve and mitten")
+
+func _dressed_part(parent:Node3D, geometry:Mesh, label:String) -> MeshInstance3D:
+	var part:=MeshInstance3D.new()
+	part.name=label
+	part.mesh=geometry
+	parent.add_child(part)
+	return part
 
 
 func _link(mesh_part: MeshInstance3D, low: Vector3, high: Vector3, thickness: float) -> void:
@@ -137,11 +124,13 @@ func pose(bank: float, speed: float, curvature: float, counter_yaw := 0.0, press
 	# Stand taller as the skis move under the body, then shorten the inside
 	# leg and drop the pelvis as pressure builds on the opposite edge.
 	var rise := 0.072 * (1.0 - pressure) * smoothstep(0.8, 3.0, speed)
-	hips.position = Vector3(sin(bank) * 0.20, 0.37 + rise - tuck * 0.029 - pressure * 0.087, 0.048 + 0.027 * pressure)
+	hips.position = Vector3(sin(bank) * 0.20, 0.37 + rise - tuck * 0.029 - pressure * 0.087, 0.048 + 0.027 * pressure - 0.034*tuck)
 	hips.rotation.z = -bank
 	chest.rotation.z = bank * 0.38
-	chest.rotation.x = -0.2 - tuck * 0.19
+	chest.rotation.x = -0.20 - tuck*0.23 - 0.055*pressure*tuck
 	chest.rotation.y = counter_yaw * 0.78 + clampf(curvature * 0.07, -0.06, 0.06)
+	_neck.rotation.x = -chest.rotation.x*0.58
+	_neck.rotation.z = bank*0.16
 	for i in 2:
 		var side := float(i * 2 - 1)
 		var x := side * 0.12
@@ -154,7 +143,7 @@ func pose(bank: float, speed: float, curvature: float, counter_yaw := 0.0, press
 		_link(shins[i], foot, knee, 0.085)
 		_link(thighs[i], knee, hip_joint, 0.113)
 		ski_decks[i].rotation.z = -bank * 0.69
-		arms[i].rotation.x = 0.04 + side * bank * 0.70
+		arms[i].rotation.x = 0.07 + 0.23*tuck + side*bank*0.59
 		arms[i].rotation.z = side * (0.09 + loaded * 0.30)
 
 
@@ -174,6 +163,7 @@ func _board_pose(bank: float, speed: float, counter_yaw: float, pressure: float,
 	hips.basis = Basis(Vector3.BACK, -bank * 0.74) * Basis(Vector3.UP, yaw)
 	chest.rotation = Vector3(lerpf(-0.16 - toe_load * 0.22, -0.035, sitting), (counter_yaw * 0.42 + _stance * 0.20) * (1.0 - sitting), 0.0)
 	_neck.rotation.y = (_stance * 0.80 - counter_yaw * 0.31) * (1.0 - sitting)
+	_neck.rotation.x = -chest.rotation.x*0.56
 	# Toe edge bends the ankles toward the snow. On the heel edge the seat
 	# drops while the knees stay in front of the boots to counterbalance it.
 	for i in 2:
