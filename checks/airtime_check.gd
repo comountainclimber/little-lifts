@@ -17,6 +17,7 @@ func expect(ok: bool, message: String) -> void:
 		errors += 1
 
 func check_mesh(rider: Node, count: int) -> void:
+	rider._track.finish_baking() # Inspect every ski-contact interval on this lap.
 	expect(rider._passes.size() == count, "The whole feature line must appear in this lap")
 	var indices: PackedInt32Array = rider._track.mesh.surface_get_arrays(0)[Mesh.ARRAY_INDEX]
 	var used := PackedByteArray()
@@ -48,7 +49,7 @@ func check_rocks(rider: Node, terrain: Node) -> void:
 		if row > 0:
 			var last: Vector3 = rider._points[row - 1]
 			if not terrain.route_clear(Vector2(last.x, last.z), flat, 0.14):
-				failure = "Feature connector crosses a tree or boulder at " + str(flat)
+				failure = "Guest %d (cut=%s) crosses a tree or boulder at %s, row %d" % [rider._model._variant,rider.used_cut_run,flat,row]
 				break
 		if geology.contains(flat, 0.16, riding):
 			failure = "Route to %s clips an unopened/other ledge at %.2f, %.2f (variant %s, row %d)" % [riding, p.x, p.z, rider._model._variant, row]

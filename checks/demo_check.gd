@@ -94,10 +94,12 @@ func _check() -> void:
 		if tier > 0:
 			await button(main.hud.tools[2])
 			expect(main.tool == main.Tool.LIFT and main.lift_type == tier, "Build tool selects newly unlocked lift")
-			var bad := PackedVector2Array([m.station_top(tier), m.station_base(tier)])
+			var bad := PackedVector2Array([m.station_base(tier), m.station_base(tier)+Vector2(2.5,-3)])
 			await drag_line(bad)
-			expect(r.lifts.size() == tier, "Downhill or invalid drag preserves the resort")
-			await drag_line(PackedVector2Array([m.station_base(tier),m.station_top(tier)]))
+			expect(r.lifts.size() == tier, "A lift shorter than its station spacing preserves the resort")
+			var stations := PackedVector2Array([m.station_base(tier),m.station_top(tier)])
+			if tier == 2: stations.reverse()
+			await drag_line(stations)
 			expect(r.lifts.size() == tier + 1, "Drag builds the next lift on surveyed line: %s" % main.hud.hint.text)
 			if r.lifts.size() != tier + 1:
 				break
@@ -153,11 +155,15 @@ func _check() -> void:
 	if r.lifts.size() == 3:
 		main.set_tool(main.Tool.EXPLORE)
 		main._toggle_follow()
+		for i in 1800:
+			if main.subject != null: break
+			for line in r.lifts: line._process(1.0/60)
+			main._update_follow(1.0/60)
 		for i in 75:
 			main._update_follow(1.0/60.0)
 		expect(is_instance_valid(main.subject) and m.camera.size < main.camera_wide_size * 0.2,"Follow shows a guest on the expanded mountain")
 		for i in 3000:
-			r.lifts[2]._process(1.0/60.0)
+			for line in r.lifts: line._process(1.0/60)
 			main._update_follow(1.0/60.0)
 		expect(main.view == main.View.MANUAL, "The camera returns after a summit descent")
 	var events: Array = r.journal.duplicate(true)

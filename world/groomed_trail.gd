@@ -32,13 +32,7 @@ func build(terrain: Node, path: PackedVector2Array, half_width: float) -> void:
 		for j in COLUMNS:
 			var across := lerpf(-1, 1, float(j) / (COLUMNS - 1))
 			var p := centers[i] + side * half_width * across
-			var y: float = terrain.surface_height(p.x, p.y)
-			var nx: float = terrain.height_at(p.x - 0.3, p.y) - terrain.height_at(p.x + 0.3, p.y)
-			var nz: float = terrain.height_at(p.x, p.y - 0.3) - terrain.height_at(p.x, p.y + 0.3)
-			var normal := Vector3(nx, 0.6, nz).normalized()
-			vertices.append(Vector3(p.x, y + 0.014, p.y))
-			normals.append(normal)
-			colors.append(terrain.snow_pigment(p.x, p.y, y, normal))
+			terrain.append_trail_vertex(p,vertices,normals,colors)
 			uvs.append(Vector2(distance, across))
 			if i > 0 and j > 0:
 				var b := i * COLUMNS + j

@@ -16,20 +16,31 @@ var _age := 0.0
 var _complete := false
 
 
-func build(points: PackedVector3Array, distances: PackedFloat32Array, terrain: Node, snowboard := false, toe_side := 1.0, passes: Array[FeatureLine.Pass] = []) -> void:
-	is_snowboard_track = snowboard
-	var vertices := PackedVector3Array()
-	var physical_profile := PackedVector3Array()
-	var colors := PackedColorArray()
-	var coords := PackedVector2Array()
-	var relief_and_load := PackedVector2Array()
+const ROWS_PER_CHUNK := 24
+var points: PackedVector3Array
+var distances: PackedFloat32Array
+var terrain: Node
+var snowboard: bool
+var toe_side: float
+var passes: Array[FeatureLine.Pass]
+var speeds := PackedFloat32Array()
+var pressures := PackedFloat32Array()
+var last_row := -1
+var _surfaces := []
+
+func build(path: PackedVector3Array, lengths: PackedFloat32Array, mountain: Node, board := false, edge := 1.0, features: Array[FeatureLine.Pass] = [], stream := false) -> void:
+	points = path
+	distances = lengths
+	terrain = mountain
+	snowboard = board
+	is_snowboard_track = board
+	toe_side = edge
+	passes = features
+	speeds.resize(points.size())
+	pressures.resize(points.size())
 	var speed_sq := 1.2 * 1.2
 	var pressure := 0.0
-	var origin_phase := points[0].x * 0.38 + points[0].z * 0.72
 	for i in points.size():
-		var raised_snow := 0.0
-		if not passes.is_empty():
-			raised_snow = maxf(0.0, points[i].y - terrain.surface_height(points[i].x, points[i].z))
 		var prev := maxi(0, i - 1)
 		var following := mini(i + 1, points.size() - 1)
 		var direction := points[following] - points[prev]
@@ -49,6 +60,39 @@ func build(points: PackedVector3Array, distances: PackedFloat32Array, terrain: N
 			curvature = 0.0
 		pressure = lerpf(pressure, tanh(curvature * speed * speed / 8.4), 1.0 - exp(-ds * 4.5))
 
+		speeds[i] = speed
+		pressures[i] = pressure
+	cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_ink = ShaderMaterial.new()
+	_ink.shader = GROOVE
+	material_override = _ink
+	set_process(false)
+	if stream:
+		_surfaces.resize(Mesh.ARRAY_MAX)
+		_append_strip(mini(ROWS_PER_CHUNK, points.size()-1))
+	else:
+		mesh = _make_mesh(_strip_arrays(0, points.size()-1))
+		last_row = points.size()-1
+
+func _strip_arrays(first: int, last: int) -> Array:
+	# One extra snow sample at either end gives neighboring strips the exact
+	# same normals along their shared boundary.
+	var low := maxi(0,first-1)
+	var high := mini(points.size()-1,last+1)
+	var origin_phase := points[0].x * 0.38 + points[0].z * 0.72
+	var vertices := PackedVector3Array()
+	var physical_profile := PackedVector3Array()
+	var colors := PackedColorArray()
+	var coords := PackedVector2Array()
+	var relief_and_load := PackedVector2Array()
+	for i in range(low,high+1):
+		var speed := speeds[i]
+		var pressure := pressures[i]
+		var direction := points[mini(i+1,points.size()-1)] - points[maxi(0,i-1)]
+		var side := Vector3(-direction.z,0,direction.x).normalized()
+		var raised_snow := 0.0
+		if not passes.is_empty():
+			raised_snow = maxf(0.0,points[i].y-terrain.surface_height(points[i].x,points[i].z))
 		var flow := smoothstep(1.25, 5.6, speed)
 		var heel := maxf(0.0, -pressure * toe_side) if snowboard else 0.0
 		var d := distances[i]
@@ -63,8 +107,8 @@ func build(points: PackedVector3Array, distances: PackedFloat32Array, terrain: N
 		var base_depth := (0.052 if snowboard else 0.043) + flow * 0.019
 		var pile_center := 0.52 + 0.17 * pocket + 0.032 * sin(d * 2.0 + origin_phase)
 		var pile_width := 0.24 + 0.054 * pocket
-		var nx: float = terrain.height_at(points[i].x - 0.3, points[i].z) - terrain.height_at(points[i].x + 0.3, points[i].z)
-		var nz: float = terrain.height_at(points[i].x, points[i].z - 0.3) - terrain.height_at(points[i].x, points[i].z + 0.3)
+		var nx: float = terrain.surface_height(points[i].x - 0.3, points[i].z) - terrain.surface_height(points[i].x + 0.3, points[i].z)
+		var nz: float = terrain.surface_height(points[i].x, points[i].z - 0.3) - terrain.surface_height(points[i].x, points[i].z + 0.3)
 		var normal := Vector3(nx, 0.6, nz).normalized()
 		var pigment: Color = terrain.snow_pigment(points[i].x, points[i].z, points[i].y, normal)
 		for column in PROFILE_COLUMNS:
@@ -105,41 +149,79 @@ func build(points: PackedVector3Array, distances: PackedFloat32Array, terrain: N
 			relief_and_load.append(Vector2(relief, pressure))
 
 	var normals := PackedVector3Array()
-	for i in points.size():
-		var row := i * PROFILE_COLUMNS
-		var back_row := maxi(0, i - 1) * PROFILE_COLUMNS
-		var next_row := mini(points.size() - 1, i + 1) * PROFILE_COLUMNS
+	for i in range(first,last+1):
+		var row := (i-low) * PROFILE_COLUMNS
+		var back_row := (maxi(low,i-1)-low) * PROFILE_COLUMNS
+		var next_row := (mini(high,i+1)-low) * PROFILE_COLUMNS
 		for j in PROFILE_COLUMNS:
-			var across := physical_profile[row + mini(j + 1, PROFILE_COLUMNS - 1)] - physical_profile[row + maxi(0, j - 1)]
-			var along := physical_profile[next_row + j] - physical_profile[back_row + j]
+			var across := physical_profile[row + mini(j+1,PROFILE_COLUMNS-1)] - physical_profile[row + maxi(0,j-1)]
+			var along := physical_profile[next_row+j] - physical_profile[back_row+j]
 			var n := across.cross(along).normalized()
 			normals.append(n if n.y > 0 else -n)
-	var surfaces := []
-	surfaces.resize(Mesh.ARRAY_MAX)
-	surfaces[Mesh.ARRAY_VERTEX] = vertices
-	surfaces[Mesh.ARRAY_NORMAL] = normals
-	surfaces[Mesh.ARRAY_COLOR] = colors
-	surfaces[Mesh.ARRAY_TEX_UV] = coords
-	surfaces[Mesh.ARRAY_TEX_UV2] = relief_and_load
-	var indices := _indices_for(points.size())
-	if not passes.is_empty():
-		var on_snow := PackedInt32Array()
-		var per_row := (PROFILE_COLUMNS - 1) * 6
-		var first_index := 0
-		for feature in passes:
-			on_snow.append_array(indices.slice(first_index, feature.lip_row * per_row))
-			first_index = feature.landing_row * per_row
-		on_snow.append_array(indices.slice(first_index))
-		indices = on_snow
-	surfaces[Mesh.ARRAY_INDEX] = indices
+	var start_vertex := (first-low)*PROFILE_COLUMNS
+	var end_vertex := (last-low+1)*PROFILE_COLUMNS
+	var result := []
+	result.resize(Mesh.ARRAY_MAX)
+	result[Mesh.ARRAY_VERTEX] = vertices.slice(start_vertex,end_vertex)
+	result[Mesh.ARRAY_NORMAL] = normals
+	result[Mesh.ARRAY_COLOR] = colors.slice(start_vertex,end_vertex)
+	result[Mesh.ARRAY_TEX_UV] = coords.slice(start_vertex,end_vertex)
+	result[Mesh.ARRAY_TEX_UV2] = relief_and_load.slice(start_vertex,end_vertex)
+	result[Mesh.ARRAY_INDEX] = _ground_indices(first,last)
+	return result
+
+func _ground_indices(first: int,last: int) -> PackedInt32Array:
+	var indices := _indices_for(last-first+1)
+	if passes.is_empty():
+		return indices
+	var on_snow := PackedInt32Array()
+	var from := first
+	var per_row := (PROFILE_COLUMNS-1)*6
+	for feature in passes:
+		if feature.landing_row <= first or feature.lip_row >= last:
+			continue
+		var lip := maxi(first,feature.lip_row)
+		on_snow.append_array(indices.slice((from-first)*per_row,(lip-first)*per_row))
+		from = mini(last, feature.landing_row)
+	on_snow.append_array(indices.slice((from-first)*per_row))
+	return on_snow
+
+func _make_mesh(arrays: Array) -> ArrayMesh:
 	var ribbon := ArrayMesh.new()
-	ribbon.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, surfaces)
-	mesh = ribbon
-	cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	_ink = ShaderMaterial.new()
-	_ink.shader = GROOVE
-	material_override = _ink
-	set_process(false)
+	if not arrays[Mesh.ARRAY_INDEX].is_empty():
+		ribbon.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays)
+	return ribbon
+
+func _append_strip(last: int) -> void:
+	var first := maxi(0,last_row)
+	var arrays := _strip_arrays(first,last)
+	var ribbon := _make_mesh(arrays)
+	for slot: int in [Mesh.ARRAY_VERTEX,Mesh.ARRAY_NORMAL,Mesh.ARRAY_COLOR,Mesh.ARRAY_TEX_UV,Mesh.ARRAY_TEX_UV2]:
+		if first == 0:
+			_surfaces[slot] = arrays[slot]
+		else:
+			_surfaces[slot].append_array(arrays[slot].slice(PROFILE_COLUMNS))
+	if first == 0:
+		mesh = ribbon
+	elif ribbon.get_surface_count() > 0:
+		var strip := MeshInstance3D.new()
+		strip.mesh = ribbon
+		strip.material_override = _ink
+		strip.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(strip)
+	last_row = last
+
+func finish_baking() -> void:
+	if _surfaces.is_empty():
+		return
+	while last_row < points.size()-1:
+		_append_strip(mini(last_row+ROWS_PER_CHUNK,points.size()-1))
+	_surfaces[Mesh.ARRAY_INDEX] = _ground_indices(0,points.size()-1)
+	mesh = _make_mesh(_surfaces)
+	for child in get_children():
+		child.hide()
+		child.queue_free()
+	_surfaces.clear()
 
 
 static func _indices_for(rows: int) -> PackedInt32Array:
@@ -165,10 +247,13 @@ static func _indices_for(rows: int) -> PackedInt32Array:
 
 
 func reveal(travelled: float) -> void:
+	while last_row < points.size()-1 and distances[last_row] < travelled + 1.5:
+		_append_strip(mini(last_row+ROWS_PER_CHUNK,points.size()-1))
 	_ink.set_shader_parameter("travelled", travelled)
 
 
 func finish() -> void:
+	finish_baking()
 	_complete = true
 	set_process(true)
 	var old: Array[Node] = []

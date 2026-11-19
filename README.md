@@ -6,12 +6,12 @@ Build a small ski resort across Village Hill, the wooded Saddle, and Summit Ridg
 
 Open `build/Little Lifts.app`. To play from source, import `project.godot` in Godot 4.7.2 and press F5.
 
-1. Choose **Cut a run**. Start at the upper ring, draw downhill through a stand of pines, and release at the lower ring. Use the Gentle arc, S turns, or Tree weave survey as a guide. Draw your own bends around stands of trees to leave islands of pines. The marks beside your stroke show the clearing width.
-2. Watch a skier or snowboarder use the new trail. When the first rider reaches the lower station, **Build a lift** offers the Saddle double chair. Drag uphill between the survey rings or find another clear lift line on the accessible mountain.
+1. Choose **Cut a run**. Click the snow to place bends between the lift stations. Drag a bend to move it, use **Undo bend** to remove the last one, and choose **Cut trail** to open the route. Drawing from ring to ring opens a freehand trail on release. Sketching only part of a trail leaves an editable draft with links to both stations. Gentle arc, S turns, and Tree weave give you survey lines to follow. Your route can cross open snow or clear a strip through the pines.
+2. Watch a skier or snowboarder use the new trail. When the first rider reaches the lower station, **Build a lift** offers the Saddle double chair. Click the two terminal locations or drag between them. The survey rings suggest one route. You can put a lift elsewhere on accessible terrain, including through the woods. Construction clears the cable corridor and skiable return. Hold **Alt** for precise placement near a survey ring.
 3. Cut and ski a run served by the double chair to unlock the high-speed summit tram. Earlier lifts and trails keep running. Use the selector in **Cut a run** to return to an earlier lift.
 4. Open **Village** to choose a building and click a marked plot. The first completed cut opens the waffle hut. Building the double chair opens the ski school, and the tram opens the day lodge. Ski racks, benches, and lamps appear as the resort grows.
 
-5. Choose **Terrain** and select **Terrain park**. Click a marked site on a cut run to shape a pair of big kickers. The survey checks the approach, space between landings, slope and clearance. For **Summit extremes**, build the tram and cut a line that reaches a natural ridge ledge. Click the survey ring above an eligible lip to open that descent.
+5. Choose **Terrain** and select **Terrain park**. Click a marked site on a cut run to shape a pair of big kickers. The survey checks the approach, space between landings, slope and clearance. Select **Summit extremes** to inspect the seven ridge ledges at any time. Build the tram and cut a line that reaches one to open it. Click the survey ring above an eligible lip to open that descent.
 
 Clouds gather and snowfall drifts across the slopes over several minutes. Each resort opens in clear light with a view of the full ski area and its surrounding range.
 
@@ -42,11 +42,7 @@ With the matching Godot Web templates installed, run the following from the proj
 mkdir -p build/web
 godot --headless --path . --import
 godot --headless --path . --export-release Web build/web/index.html
-python3 web/package_static.py build/web build/site/play
+python3 web/package_static.py build/web website/play
 ```
 
-Serve `build/site` with a static HTTP server and open `/play/`. The package includes a compressed, single-threaded WebAssembly runtime and the WebGL 2 game. Construction and sound settings are saved in browser storage for that site.
-
-## Browser build
-
-Export the **Web** preset with matching Godot 4.7.2 Web templates, then run `python3 web/package_static.py build/web website/play`. Serve the `website` directory over HTTP to play. The title screen and lift viewer are plain HTML, CSS and JavaScript. Web saves stay in the browser profile for the site's origin.
+Serve `website` over HTTP. The title screen opens the game at `/play/`. Construction and sound settings are saved in browser storage for that site.

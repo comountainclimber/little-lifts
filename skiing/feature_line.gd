@@ -184,12 +184,29 @@ static func _round_outcrop(path: PackedVector3Array, left: int, first: int, last
 		var p := _flat(path[i])
 		centers.append(p.lerp(spine[i], weight) if spine.size() == path.size() else p)
 	for radius: int in [6, 18, 34]:
-		if _skiable_channel(path, left, centers, profile, across, radius, terrain, anchor, target):
+		# Many shelves only need a single smooth traverse. Check rock occupancy
+		# first; only a clear candidate needs a full tree and terrain survey.
+		var begin := 0 if radius == 6 else (8 if radius == 18 else 20)
+		for lane in range(begin,radius+1,2):
+			for side: float in [-1.0,1.0]:
+				var choice := centers.duplicate()
+				var blocked := false
+				for i in choice.size():
+					choice[i] += across * (lane * 0.30 * side * profile[i])
+					if _blocks(terrain,choice[i],anchor,target):
+						blocked = true
+						break
+				if not blocked and _commit_clear_line(path,left,choice,terrain,anchor,target):
+					return true
+		# The full dynamic search handles alternating shelves and occupied snow.
+		if _skiable_channel(path,left,centers,profile,across,radius,terrain,anchor,target,false):
+			return true
+		if _skiable_channel(path,left,centers,profile,across,radius,terrain,anchor,target,true):
 			return true
 	return false
 
 
-static func _skiable_channel(path: PackedVector3Array, first_row: int, centers: PackedVector2Array, profile: PackedFloat32Array, across: Vector2, radius: int, terrain: Node, anchor: Vector2, target: String) -> bool:
+static func _skiable_channel(path: PackedVector3Array, first_row: int, centers: PackedVector2Array, profile: PackedFloat32Array, across: Vector2, radius: int, terrain: Node, anchor: Vector2, target: String, check_transitions: bool) -> bool:
 	# Consecutive shelves can pinch opposite sides of a run. Find the least
 	# sideways movement that fits between them, starting with the cleared width.
 	const STEP := 0.30
@@ -206,14 +223,14 @@ static func _skiable_channel(path: PackedVector3Array, first_row: int, centers: 
 		for lane in lanes:
 			var offset := (lane - radius) * STEP
 			var p := centers[row] + across * offset * profile[row]
-			if _blocks(terrain, p, anchor, target) or not terrain.route_clear(p, p, 0.23):
+			if _blocks(terrain, p, anchor, target) or (check_transitions and not terrain.route_clear(p,p,0.23)):
 				continue
 			for parent in range(maxi(0, lane - 1), mini(lanes, lane + 2)):
 				var cost := costs[parent] + 0.012 * offset * offset * profile[row] * profile[row] + absf(lane - parent) * 0.15
 				if cost >= next[lane]:
 					continue
 				var previous := centers[row - 1] + across * (parent - radius) * STEP * profile[row - 1]
-				if _blocks(terrain, p.lerp(previous, 0.5), anchor, target) or not terrain.route_clear(previous, p, 0.19):
+				if check_transitions and (_blocks(terrain,p.lerp(previous,0.5),anchor,target) or not terrain.route_clear(previous,p,0.19)):
 					continue
 				next[lane] = cost
 				parents[row * lanes + lane] = parent
@@ -236,12 +253,18 @@ static func _skiable_channel(path: PackedVector3Array, first_row: int, centers: 
 			if smooth and row < offsets.size() - 1:
 				offset = (offsets[row - 1] + 2.0 * offset + offsets[row + 1]) * 0.25
 			var p := centers[row] + across * offset
-			if _blocks(terrain, p, anchor, target) or _blocks(terrain, p.lerp(candidate[-1], 0.5), anchor, target) or not terrain.route_clear(candidate[-1], p, 0.19):
-				break
 			candidate.append(p)
-		if candidate.size() == centers.size():
-			for row in range(1, candidate.size() - 1):
-				var p := candidate[row]
-				path[row + first_row] = Vector3(p.x, terrain.surface_height(p.x, p.y), p.y)
+		if _commit_clear_line(path,first_row,candidate,terrain,anchor,target):
 			return true
 	return false
+
+static func _commit_clear_line(path: PackedVector3Array, start: int, line: PackedVector2Array, terrain: Node, anchor: Vector2, target: String) -> bool:
+	for row in range(1,line.size()):
+		var p := line[row]
+		var last := line[row-1]
+		if _blocks(terrain,p,anchor,target) or _blocks(terrain,p.lerp(last,0.5),anchor,target) or not terrain.route_clear(last,p,0.19):
+			return false
+	for row in range(1,line.size()-1):
+		var p := line[row]
+		path[start+row] = Vector3(p.x,terrain.surface_height(p.x,p.y),p.y)
+	return true

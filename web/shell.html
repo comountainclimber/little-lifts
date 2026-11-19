@@ -59,11 +59,14 @@
       if (!window.DecompressionStream) throw new Error('This browser is missing streaming decompression. Open Little Lifts in a current version of Chrome, Edge, Firefox, or Safari.');
       const missing = Engine.getMissingFeatures({threads: false});
       if (missing.length) throw new Error('This browser is missing ' + missing.join(', ') + '. Enable hardware acceleration or try a current browser.');
+      const sceneReady = new Promise(resolve => { window.littleLiftsSceneReady = resolve; });
       const engine = new Engine(config);
       await engine.startGame({canvas, onProgress(loaded, total) {
         if (total > 0) { progress.max = total; progress.value = loaded; }
         if (total > 0 && loaded >= total) message.textContent = 'Starting the lifts…';
       }});
+      await sceneReady;
+      delete window.littleLiftsSceneReady;
       requestAnimationFrame(() => {
         document.getElementById('loading').hidden = true;
         canvas.focus({preventScroll:true});

@@ -46,7 +46,7 @@ static func jacket_color(variant: int) -> Color:
 	return JACKETS[posmod(variant, JACKETS.size())]
 
 
-func start_run(summit: Vector2, base: Vector2, variant: int, terrain: Node, tracks_parent: Node3D, lap: int = 0, piste_side: Vector2 = Vector2.ZERO, run_line := PackedVector2Array(), sites: Array = [], arriving_model: Model = null) -> void:
+func start_run(summit: Vector2, base: Vector2, variant: int, terrain: Node, tracks_parent: Node3D, lap: int = 0, piste_side: Vector2 = Vector2.ZERO, run_line := PackedVector2Array(), sites: Array = [], arriving_model: Model = null, prepared_spine := PackedVector2Array(), stream_tracks := false) -> void:
 	_terrain = terrain
 	is_snowboarder = RiderStyle.is_boarder(variant)
 	_toe_side = RiderStyle.toe_side(variant) if is_snowboarder else 0.0
@@ -56,7 +56,7 @@ func start_run(summit: Vector2, base: Vector2, variant: int, terrain: Node, trac
 	rng.seed = absi(variant) * 196613 + 87437
 	var spine := PackedVector2Array()
 	if not run_line.is_empty():
-		spine = cut_run_spine(summit, base, run_line, terrain)
+		spine = prepared_spine if not prepared_spine.is_empty() else cut_run_spine(summit, base, run_line, terrain)
 		if not spine.is_empty():
 			_plot_cut_run(spine, rng, lap, sites)
 			used_cut_run = true
@@ -82,7 +82,7 @@ func start_run(summit: Vector2, base: Vector2, variant: int, terrain: Node, trac
 	_drag = rng.randf_range(0.075, 0.115)
 	_track = CarveTrack.new()
 	tracks_parent.add_child(_track)
-	_track.build(_points, _distances, terrain, is_snowboarder, _toe_side, _passes)
+	_track.build(_points, _distances, terrain, is_snowboarder, _toe_side, _passes, stream_tracks)
 	_active = true
 	_update_pose(1.0)
 
@@ -92,7 +92,7 @@ func set_followed(focused: bool) -> void:
 
 
 func _height(p: Vector2) -> float:
-	return _terrain.height_at(p.x, p.y)
+	return _terrain.surface_height(p.x, p.y)
 
 
 func _gradient(p: Vector2) -> Vector2:
@@ -180,6 +180,18 @@ static func cut_run_spine(exit: Vector2, arrival: Vector2, line: PackedVector2Ar
 	return spine if _run_open(spine, terrain, 0.20) else empty
 
 
+const CONTOUR_STRIDE := 3
+
+static func _offset_at(samples: PackedVector2Array, row: int, last: int) -> Vector2:
+	if row >= last:
+		return samples[-1]
+	var anchor := row / CONTOUR_STRIDE
+	if row % CONTOUR_STRIDE == 0:
+		return samples[anchor]
+	var t := float(row % CONTOUR_STRIDE) / mini(CONTOUR_STRIDE,last-anchor*CONTOUR_STRIDE)
+	return samples[anchor].cubic_interpolate(samples[anchor+1],samples[maxi(0,anchor-1)],samples[mini(samples.size()-1,anchor+2)],t)
+
+
 func _plot_cut_run(spine: PackedVector2Array, rng: RandomNumberGenerator, lap: int, sites: Array) -> void:
 	var reference := PackedFloat32Array([0.0])
 	for i in range(1, spine.size()):
@@ -187,8 +199,11 @@ func _plot_cut_run(spine: PackedVector2Array, rng: RandomNumberGenerator, lap: i
 	var width := rng.randf_range(1.12, 1.52) * (1.17 if is_snowboarder else 1.0)
 	var cadence := rng.randf_range(8.1, 10.0) * (1.18 if is_snowboarder else 1.0)
 	var phase := rng.randf_range(-PI, PI) + 0.47 * sin(lap * 1.71)
-	var weave := PackedVector2Array()
-	for i in spine.size():
+	# The turns change over several metres. Sample contour direction every
+	# three snow rows, interpolate the offsets, and still validate every row.
+	var anchors := PackedVector2Array()
+	for j in ceili(float(spine.size()-1)/CONTOUR_STRIDE)+1:
+		var i := mini(j*CONTOUR_STRIDE,spine.size()-1)
 		var d := reference[i]
 		var center := spine[i]
 		var travel := (spine[mini(i+2, spine.size()-1)] - spine[maxi(i-2,0)]).normalized()
@@ -206,7 +221,10 @@ func _plot_cut_run(spine: PackedVector2Array, rng: RandomNumberGenerator, lap: i
 			angle += 0.23 * cos(angle) * _toe_side
 		var swing := width * room * settle * sin(angle)
 		var offset := _follow_contour(center, absf(swing), across * signf(swing)) - center
-		weave.append(offset)
+		anchors.append(offset)
+	var weave := PackedVector2Array()
+	for i in spine.size():
+		weave.append(_offset_at(anchors,i,spine.size()-1))
 	# Every point stays within the cleared width. Tighter corridors reduce
 	# the rider's arcs; even the narrowest option still follows all branches
 	# of the validated line instead of returning to the lift's straight piste.
@@ -275,14 +293,19 @@ func _plot_line(summit: Vector2, base: Vector2, rng: RandomNumberGenerator, lap:
 		_length = 0.0
 		var last_flat := summit
 		var last_center_y: float = _terrain.surface_height(summit.x, summit.y)
+		var anchors := PackedVector2Array()
+		for j in ceili(float(subdivisions)/CONTOUR_STRIDE)+1:
+			var i := mini(j*CONTOUR_STRIDE,subdivisions)
+			var p := summit.lerp(base,float(i)/subdivisions)
+			anchors.append(_follow_contour(p,offsets[i]*scale_factor,cross_line)-p)
 		for i in offsets.size():
 			var center := summit.lerp(base, float(i) / subdivisions)
-			var flat := _follow_contour(center, offsets[i] * scale_factor, cross_line)
+			var flat := center + _offset_at(anchors,i,subdivisions)
 			var point := Vector3(flat.x, _terrain.surface_height(flat.x, flat.y), flat.y)
 			var center_y: float = _terrain.surface_height(center.x, center.y)
 			if i > 0:
 				var climb_limit := maxf(0.025, center_y - last_center_y + 0.012)
-				if scale_factor > 0 and (point.y - _points[i-1].y > climb_limit or not _terrain.route_clear(last_flat, flat, 0.10)):
+				if scale_factor > 0 and (point.y - _points[i-1].y > climb_limit or not _terrain.route_clear(last_flat, flat, 0.18)):
 					break
 				_length += point.distance_to(_points[i-1])
 			_points.append(point)

@@ -12,6 +12,18 @@ const SHELVES := [
 	["east_cornice", "East Cornice", Vector2(-9.2,-66.6), Vector2(0.44,0.90), 4.65, 2.46, 7.4],
 	["crown", "Crown Rock", Vector2(-18.2,-69.5), Vector2(0.50,0.86), 4.05, 2.7, 8.1],
 ]
+# Transverse joint locations, half widths and signed relief. Positive values
+# keep a projecting rib. Negative values pluck a slot out of the cliff.
+# Strike (last column) tips those joints across the face toward the toe.
+const BEDROCK := [
+	[[Vector3(-0.70,0.36,0.38),Vector3(0.63,0.37,-0.45)], -0.30, 0.13],
+	[[Vector3(-0.77,0.25,0.84),Vector3(-0.49,0.16,-1.04),Vector3(0.58,0.42,-0.33)], 0.41, 0.13],
+	[[Vector3(-0.57,0.35,-0.73),Vector3(0.46,0.28,0.47),Vector3(0.77,0.32,-0.54)], -0.48, 0.10],
+	[[Vector3(-0.77,0.32,0.56),Vector3(-0.42,0.18,-0.70),Vector3(0.66,0.39,0.43)], 0.31, 0.14],
+	[[Vector3(-0.71,0.27,-0.37),Vector3(-0.42,0.20,0.24),Vector3(0.57,0.40,-0.27),Vector3(0.82,0.18,0.40)], -0.40, 0.10],
+	[[Vector3(-0.61,0.41,0.45),Vector3(0.74,0.31,-0.43)], 0.22, 0.41],
+	[[Vector3(-0.76,0.20,0.93),Vector3(-0.50,0.18,-0.85),Vector3(0.46,0.16,-0.64),Vector3(0.73,0.23,0.86)], -0.32, 0.18],
+]
 var sites: Array[Dictionary] = []
 var _hill: Node
 var _bounds: Rect2
@@ -49,18 +61,42 @@ func _edge_offset(site: Dictionary, across: float) -> float:
 	var joint := absf(sin(4.4 * across + 0.83 * site.seed) - sin(0.83 * site.seed))
 	return -absf(across) * (0.28 + 0.51 * joint) + 0.50 * across * sin(1.36 * site.seed) - 0.16 * across * across
 
+func _rib_relief(site: Dictionary, across: float, t: float) -> float:
+	# Fractures rake uphill and converge, rather than running parallel like
+	# flutes. Leave an uninterrupted snow tongue beneath skis and boards.
+	var shoulder := smoothstep(0.22,0.39,absf(across))
+	var x := across + float(BEDROCK[site.seed][1]) * (1.0-t) * 0.57 * shoulder
+	var relief := 0.0
+	for joint: Vector3 in BEDROCK[site.seed][0]:
+		var distance := absf(x-joint.x)/joint.y
+		var triangle := maxf(0.0, 1.0-distance)
+		relief += joint.z * smoothstep(0.03,0.84,triangle)
+	return relief * shoulder
+
+func _brow(site: Dictionary, across: float) -> float:
+	var joint := _rib_relief(site,across,1.0)
+	# A broken block recedes into the ridge. Its intact neighbour projects,
+	# always within the original surveyed lip and approach footprint.
+	return maxf(-site.length+0.52, _edge_offset(site,across) + minf(0,joint)*1.08)
+
 func _position(site: Dictionary, across: float, t: float) -> Vector2:
-	var along := lerpf(-site.length, _edge_offset(site,across), t)
-	return site.point + site.direction * along + site.direction.orthogonal() * across * _half_width(site,across)
+	var along := lerpf(-site.length,_brow(site,across),t)
+	return site.point + site.direction*along + site.direction.orthogonal()*across*_half_width(site,across)
+
+func _crest(site: Dictionary, across: float, t: float) -> float:
+	var snow := 1.0-smoothstep(0.39,1.0,absf(across))
+	var rock := _rib_relief(site,across,t)*smoothstep(0.12,0.72,t)
+	if rock > 0.0:
+		rock *= 0.68
+	var fade := 1.0-smoothstep(0.87,1.0,absf(across))
+	return maxf(0.0, snow+rock)*fade
 
 func cap_height(site: Dictionary, p: Vector2) -> float:
-	var delta: Vector2 = p - site.point
+	var delta: Vector2 = p-site.point
 	var side: float = delta.dot(site.direction.orthogonal())
-	var across := side / _half_width(site,side)
-	var edge := _edge_offset(site,across)
-	var t := clampf((delta.dot(site.direction) + site.length) / (site.length + edge), 0.0, 1.0)
-	var blend := 1.0 - smoothstep(0.47,1.0,absf(across))
-	return _hill.surface_height(p.x,p.y) + site.rise * smoothstep(0.0,1.0,t) * blend
+	var across := side/_half_width(site,side)
+	var t := clampf((delta.dot(site.direction)+site.length)/(site.length+_brow(site,across)),0.0,1.0)
+	return _hill.surface_height(p.x,p.y) + site.rise*smoothstep(0.0,1.0,t)*_crest(site,across,t)
 
 func contains(p: Vector2, clearance := 0.0, except_id := "") -> bool:
 	if not _bounds.grow(clearance).has_point(p):
@@ -86,68 +122,221 @@ func clear_segment(a: Vector2, b: Vector2, clearance: float, except_id := "") ->
 			return false
 	return true
 
+func _sections(site: Dictionary) -> PackedFloat32Array:
+	var xs := PackedFloat32Array([-1.0,-0.88,-0.34,-0.18,0.0,0.22,0.32,0.89,1.0])
+	for joint: Vector3 in BEDROCK[site.seed][0]:
+		xs.append(clampf(joint.x-joint.y*0.67,-0.96,0.96))
+		xs.append(joint.x-joint.y*0.17)
+		xs.append(joint.x+joint.y*0.17)
+		xs.append(clampf(joint.x+joint.y*0.67,-0.96,0.96))
+	xs.sort()
+	var sections := PackedFloat32Array([xs[0]])
+	for x in xs:
+		if x-sections[-1] > 0.032:
+			sections.append(x)
+	return sections
+
+func _granite(site: Dictionary, across: float, level: float, normal: Vector3) -> Color:
+	var strike := Vector3(0.91,-0.12,-0.36)
+	var light_plane := clampf(0.48+0.64*normal.dot(strike),0.0,1.0)
+	var stone := Color("#606778").lerp(Color("#a3978e"),light_plane)
+	var seam := _rib_relief(site,across,1.0)
+	var depth := (1.0-smoothstep(0.12,0.70,level))*0.12 + clampf(-seam,0.0,1.0)*0.20
+	return stone.darkened(depth).lerp(Color("#acaaa8"),0.075*smoothstep(0.02,0.8,seam))
+
+func _roof(site: Dictionary, surface: SurfaceTool, xs: PackedFloat32Array) -> void:
+	var previous := PackedVector3Array()
+	var rows := PackedFloat32Array([0.0,0.15,0.29,0.43,0.57,0.72,0.85,0.94,1.0])
+	for t in rows:
+		var ring := PackedVector3Array()
+		for x in xs:
+			var p := _position(site,x,t)
+			ring.append(Vector3(p.x,cap_height(site,p)+0.009,p.y))
+		if not previous.is_empty():
+			for i in range(xs.size()-1):
+				var x := (xs[i]+xs[i+1])*0.5
+				var mid := (previous[i]+ring[i+1])*0.5
+				var n := (ring[i]-previous[i]).cross(ring[i+1]-previous[i]).normalized()
+				if n.y < 0.0: n = -n
+				var rock := _rib_relief(site,x,t)
+				# Snow lies in the cracks and across the launch tongue. Steep
+				# windward backs and the crest flanks are scoured down to rock.
+				var reveal := smoothstep(0.30,0.52,absf(x))*smoothstep(0.22,0.52,t)
+				reveal *= smoothstep(0.0,0.38,rock+0.85*(1.0-n.y))
+				reveal *= 1.0-smoothstep(0.87,1.0,absf(x))
+				var tint := _native_snow(mid).lerp(_granite(site,x,1.0,n),reveal)
+				Feature._face(surface,previous[i],ring[i],previous[i+1],Vector3.UP,tint)
+				Feature._face(surface,ring[i],ring[i+1],previous[i+1],Vector3.UP,tint)
+		previous = ring
+
+func _face_vertex(site: Dictionary, across: float, row: int) -> Vector3:
+	var level: float = [1.0,0.0,0.62,0.58,0.26,0.0][row]
+	var strike: float = BEDROCK[site.seed][1]
+	var x := across
+	if row >= 2:
+		x += strike*(1.0-level)*0.39*(1.0-absf(across))
+	var lip := _position(site,across,1.0)
+	var headroom := maxf(0.0,cap_height(site,lip)-_hill.surface_height(lip.x,lip.y))
+	var rib := _rib_relief(site,across,1.0)
+	var mantle: float = BEDROCK[site.seed][2]
+	var cap := minf(headroom*0.20,mantle*(0.75+0.32*cos(2.9*across+site.seed*0.83)))
+	var foot := _position(site,x,1.0)
+	var overhang := minf(0.27,mantle*0.65)*smoothstep(0.0,0.76,headroom)
+	# The snow blister reaches a short distance past the granite below it.
+	# A tilted shelf catches snow on just one side of the face; at the other
+	# end the two fracture planes meet directly with no continuous stripe.
+	var bench := smoothstep(-0.2,0.8,cos(3.6*across+site.seed*1.47))
+	var offset := 0.0
+	match row:
+		0: offset = 0.0
+		1: offset = overhang
+		2: offset = -0.25 + 0.15*rib
+		3: offset = -0.25 + 0.46*bench + 0.15*rib
+		4: offset = 0.15 + 0.20*rib
+		5: offset = 0.50 + 0.10*clampf(rib,-1,1)
+	foot += site.direction*offset
+	var ground: float = _hill.surface_height(foot.x,foot.y)-0.045
+	var y := cap_height(site,lip)+0.009
+	if row == 1:
+		y -= cap
+	elif row >= 2:
+		var dip := (0.17*across*strike+0.055*rib)*sin(PI*level)
+		y = lerpf(ground,y-cap,level+dip)
+	return Vector3(foot.x,y,foot.y)
+
+func _cliff_face(site: Dictionary, surface: SurfaceTool, xs: PackedFloat32Array) -> void:
+	var previous := PackedVector3Array()
+	var outward := Vector3(site.direction.x,0.0,site.direction.y)
+	for row in 6:
+		var ring := PackedVector3Array()
+		for x in xs:
+			ring.append(_face_vertex(site,x,row))
+		if row > 0:
+			for i in range(xs.size()-1):
+				var across := (xs[i]+xs[i+1])*0.5
+				var a := previous[i]
+				var b := ring[i]
+				var c := previous[i+1]
+				var d := ring[i+1]
+				var n := (c-a).cross(b-a).normalized()
+				if n.dot(outward) < 0.0: n = -n
+				var tint := _granite(site,across,1.0-float(row)/5.0,n)
+				if row == 1:
+					tint = _native_snow(a).darkened(0.08)
+				elif row == 3 and n.y > 0.80:
+					var catchment := smoothstep(0.28,0.93,cos(5.0*across+site.seed*1.73))
+					tint = tint.lerp(_native_snow(b),catchment*smoothstep(0.80,0.98,n.y)*0.68)
+				elif row == 2:
+					tint = tint.darkened(0.12*maxf(-n.y,0.0))
+				Feature._face(surface,a,b,c,outward,tint)
+				Feature._face(surface,b,d,c,outward,tint)
+		previous = ring
+
+# Broken sheets buttress the front and trail back into the divide. Their
+# roots are inside the original clearance envelope. Fractional coordinates
+# give each face its own mass and tread pattern independent of the skier.
+# Each piece is (across, position front to back, half breadth, height).
+const BUTTRESSES := [
+	[Vector4(-0.71,0.83,0.28,0.86),Vector4(-0.54,0.48,0.32,0.41),Vector4(0.64,0.91,0.33,0.42)],
+	[Vector4(-0.79,0.73,0.19,1.00),Vector4(0.65,0.77,0.34,0.77),Vector4(0.63,0.48,0.29,0.47)],
+	[Vector4(-0.68,0.82,0.29,0.47),Vector4(0.70,0.60,0.24,0.76)],
+	[Vector4(-0.75,0.62,0.24,0.84),Vector4(0.65,0.84,0.34,1.16),Vector4(0.55,0.53,0.35,0.73)],
+	[Vector4(-0.62,0.87,0.36,0.94),Vector4(-0.64,0.54,0.32,0.60),Vector4(0.72,0.76,0.28,0.59)],
+	[Vector4(-0.73,0.76,0.24,0.72),Vector4(0.70,0.91,0.31,0.72),Vector4(0.68,0.53,0.30,0.52)],
+	[Vector4(-0.75,0.56,0.25,0.84),Vector4(0.72,0.79,0.26,0.95),Vector4(0.73,0.48,0.27,0.65)],
+]
+const SLAB_PLAN := [Vector2(-0.74,-0.84),Vector2(0.38,-1.0),Vector2(1.0,-0.34),Vector2(0.77,0.70),Vector2(0.18,1.0),Vector2(-0.67,0.82),Vector2(-1.0,0.02)]
+
+func _slab_site(site: Dictionary, across: float, along: float) -> Vector2:
+	var x := signf(across)*clampf(absf(across),0.40,0.99)
+	var depth := clampf(along,-site.length+0.03,_edge_offset(site,x)+0.64)
+	return site.point + site.direction*depth + site.direction.orthogonal()*x*_half_width(site,x)
+
+func _buttress(site: Dictionary, surface: SurfaceTool, piece: Vector4) -> void:
+	var direction: Vector2 = site.direction
+	var side: Vector2 = direction.orthogonal()
+	var toe := lerpf(-site.length,_edge_offset(site,piece.x)+0.46,piece.y)
+	var axis := signf(piece.x)
+	var rootline := PackedVector3Array()
+	var shoulder := PackedVector3Array()
+	var table := PackedVector3Array()
+	for uv: Vector2 in SLAB_PLAN:
+		# The basal socket splays toward the open face. At the narrow end
+		# the entire block disappears beneath the approach snow.
+		var raked := piece.x + piece.z*uv.x + axis*0.095*uv.y
+		var z := toe+uv.y*(0.80+0.23*piece.w)+0.19*axis*uv.x
+		var p := _slab_site(site,raked,z)
+		var q := _slab_site(site,piece.x+(raked-piece.x)*0.88-axis*0.035,z-0.09)
+		var top := _slab_site(site,piece.x+(raked-piece.x)*0.71-axis*0.03,z-0.19)
+		var y: float = _hill.surface_height(top.x,top.y)
+		var h := piece.w*(0.73 + 0.23*uv.y + 0.14*axis*uv.x)
+		# Pieces at a weathered shoulder sit low. A central snow pocket can
+		# cover their inner edge naturally without making a detached boulder.
+		var bed := maxf(y,cap_height(site,top)-0.27)
+		rootline.append(Vector3(p.x,_hill.surface_height(p.x,p.y)-0.065,p.y))
+		shoulder.append(Vector3(q.x,bed+0.64*h,q.y))
+		table.append(Vector3(top.x,bed+h,top.y))
+	var core := Vector3.ZERO
+	for p in table:
+		core += p
+	core /= table.size()
+	for i in table.size():
+		var j := (i+1)%table.size()
+		var outer := ((rootline[i]+rootline[j])*0.5-core)
+		outer.y = 0.0
+		var radial := outer.normalized()
+		var tint := _granite(site,piece.x,0.4,radial)
+		Feature._face(surface,rootline[i],rootline[j],shoulder[i],radial,tint)
+		Feature._face(surface,rootline[j],shoulder[j],shoulder[i],radial,tint)
+		Feature._face(surface,shoulder[i],shoulder[j],table[i],radial,tint.lightened(0.05))
+		Feature._face(surface,shoulder[j],table[j],table[i],radial,tint.lightened(0.05))
+		var top_normal := (table[i]-core).cross(table[j]-core).normalized()
+		if top_normal.y < 0.0: top_normal = -top_normal
+		var pocket := smoothstep(0.68,0.99,top_normal.y) * (0.34+0.36*maxf(-side.dot(Vector2(top_normal.x,top_normal.z))*axis,0.0))
+		var top_tint := _granite(site,piece.x,1.0,top_normal).lerp(_native_snow(core),pocket)
+		Feature._face(surface,table[i],table[j],core,Vector3.UP,top_tint)
+
+# A faulted sill remains attached to the wall at its base. Its front breaks
+# the vertical silhouette at snow level. All of it sits below the flight.
+func _basal_sill(site: Dictionary, surface: SurfaceTool, near_x: float, far_x: float, rise: float) -> void:
+	var row := PackedVector3Array()
+	var knobs := PackedFloat32Array([0.0,0.16,0.39,0.75,0.91,1.0])
+	var shoulders := PackedFloat32Array([0.06,0.60,1.0,0.83,0.40,0.05])
+	var outward := Vector3(site.direction.x,0.0,site.direction.y)
+	for i in knobs.size():
+		var f := knobs[i]
+		var x := lerpf(near_x,far_x,f)
+		var edge := _edge_offset(site,x)
+		var root_point: Vector2 = site.point + site.direction*(edge+0.63) + site.direction.orthogonal()*x*_half_width(site,x)
+		var leading: Vector2 = root_point-site.direction*(0.07+0.055*f)
+		var rear: Vector2 = leading-site.direction*(0.44+0.38*shoulders[i])
+		var base: float = _hill.surface_height(root_point.x,root_point.y)-0.045
+		var h := rise*shoulders[i]
+		var next := PackedVector3Array([Vector3(root_point.x,base,root_point.y),Vector3(leading.x,base+h,leading.y),Vector3(rear.x,_hill.surface_height(rear.x,rear.y)+h*1.1,rear.y)])
+		if not row.is_empty():
+			var rock := _granite(site,x,0.18,outward).lightened(0.08)
+			Feature._face(surface,row[0],next[0],row[1],outward,rock)
+			Feature._face(surface,next[0],next[1],row[1],outward,rock)
+			var n := (row[2]-row[1]).cross(next[1]-row[1]).normalized()
+			var snow_catch := 0.84*smoothstep(0.65,0.97,absf(n.y))*smoothstep(0.18,0.45,f)
+			var top := rock.lerp(_native_snow(row[1]),snow_catch)
+			Feature._face(surface,row[1],row[2],next[1],Vector3.UP,top)
+			Feature._face(surface,row[2],next[2],next[1],Vector3.UP,top)
+		row = next
+
 func _expose(site: Dictionary) -> void:
-	var stone := Color("#858c9b").lerp(Color("#a39a98"), 0.5 + 0.4 * sin(site.seed * 2.71))
 	var surface := SurfaceTool.new()
 	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
-	var previous := PackedVector3Array()
-	var columns := 15
-	for row in 13:
-		var ring := PackedVector3Array()
-		for col in columns:
-			var across := 2.0 * col / (columns-1) - 1.0
-			var p := _position(site,across, float(row)/12.0)
-			ring.append(Vector3(p.x,cap_height(site,p) + 0.006,p.y))
-		if row > 0:
-			for col in range(columns-1):
-				var across := 2.0 * (col+0.5)/(columns-1) - 1.0
-				var center := (previous[col]+ring[col+1]) * 0.5
-				var tint := _native_snow(center)
-				var exposure := smoothstep(0.35,0.8,absf(across)) * (1.0 - smoothstep(0.78,1.0,absf(across)))
-				tint = tint.lerp(stone, 0.32 * exposure * smoothstep(6.0,12.0,row))
-				Feature._face(surface,previous[col],ring[col],previous[col+1],Vector3.UP,tint)
-				Feature._face(surface,ring[col],ring[col+1],previous[col+1],Vector3.UP,tint)
-		previous = ring
-	# Exposed horizontal bedding follows the irregular lip across the rib.
-	# The toe sinks into the hillside. Snow seams round off the highest face.
-	var outward := Vector3(site.direction.x,0,site.direction.y)
-	var upper := previous
-	for band in 4:
-		var lower := PackedVector3Array()
-		for col in columns:
-			var across := 2.0 * col / (columns-1) - 1.0
-			var lip := previous[col]
-			var offset := (0.36 + 0.17 * sin(8.3*across + site.seed)) * (band+1) / 4.0
-			var p := Vector2(lip.x,lip.z) + Vector2(outward.x,outward.z) * offset
-			var toe: float = _hill.surface_height(p.x,p.y) - 0.055
-			var level: float = [0.88,0.56,0.31,0.0][band]
-			if band == 1 or band == 2:
-				level += 0.13 * across * sin(0.9+site.seed) + 0.07 * sin(4.1*across+site.seed) + 0.045 * cos(9.4*across)
-			lower.append(Vector3(p.x,lerpf(toe,lip.y,level),p.y))
-		for col in range(columns-1):
-			var tone: Color = [_native_snow(previous[col]).darkened(0.055),stone.lightened(0.075),stone.darkened(0.06),stone][band]
-			var facet := tone.darkened(0.045 * (0.5 + 0.5 * sin(col*1.31 + band*0.73 + site.seed)))
-			Feature._face(surface,upper[col],lower[col],upper[col+1],outward,facet)
-			Feature._face(surface,lower[col],lower[col+1],upper[col+1],outward,facet)
-		upper = lower
-	for flank: float in [-1.0, 1.0]:
-		var t := 0.50 + 0.31 * sin(1.4 + flank * 1.8 + site.seed * 2.1)
-		var c := _position(site,flank*0.81,t)
-		var ridge := Vector3(c.x, cap_height(site,c) + 0.38 + 0.27 * t, c.y)
-		var ring := PackedVector3Array()
-		for j in 6:
-			var angle: float = TAU * j/6.0 + site.seed*0.61
-			var p: Vector2 = c + site.direction * cos(angle) * (0.52+0.49*t) + site.direction.orthogonal()*sin(angle)*0.31
-			ring.append(Vector3(p.x,cap_height(site,p) - 0.07,p.y))
-		for j in 6:
-			var a := ring[j]
-			var b := ring[(j+1)%6]
-			var peak := a.lerp(ridge,0.73)
-			Feature._face(surface,a,b,peak,Vector3.UP,stone.lightened(0.065*(j%3)))
-			Feature._face(surface,peak,b,ridge,Vector3.UP,_native_snow(ridge).darkened(0.03*(j%3)))
+	var xs := _sections(site)
+	_roof(site,surface,xs)
+	_cliff_face(site,surface,xs)
+	for piece: Vector4 in BUTTRESSES[site.seed]:
+		_buttress(site,surface,piece)
+	var sill: Vector3 = [Vector3(-0.84,0.39,0.70),Vector3(-0.23,0.86,0.75),Vector3(0.03,0.79,0.49),Vector3(-0.21,0.94,0.86),Vector3(-0.88,0.66,0.89),Vector3(-0.72,0.37,0.54),Vector3(-0.26,0.61,0.70)][site.seed]
+	_basal_sill(site,surface,sill.x,sill.y,sill.z)
 	var material := StandardMaterial3D.new()
 	material.vertex_color_use_as_albedo = true
-	material.roughness = 1.0
+	material.roughness = 0.96
 	surface.set_material(material)
 	var outcrop := MeshInstance3D.new()
 	outcrop.name = site.name

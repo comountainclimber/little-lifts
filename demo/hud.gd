@@ -7,6 +7,8 @@ signal wide_requested
 signal tool_requested(mode: int)
 signal choice_requested(index: int)
 signal shape_requested(index: int)
+signal undo_bend_requested
+signal finish_trail_requested
 
 const STATION_THEME := preload("res://demo/trail_map_theme.tres")
 const PICTOGRAMS := preload("res://demo/wayfinding_icons.svg")
@@ -38,6 +40,9 @@ var message_bar := PanelContainer.new()
 var _context := VBoxContainer.new()
 var _choice_group := VBoxContainer.new()
 var _shape_group := VBoxContainer.new()
+var _draft_tools := HBoxContainer.new()
+var undo_bend := Button.new()
+var finish_trail := Button.new()
 var _choice_label := Label.new()
 var _key_labels: Array[Label] = []
 var _icons: Array[AtlasTexture] = []
@@ -146,6 +151,15 @@ func _build_context(column: Control) -> void:
 	_select_field(_shape_group, shape_label, shape, "Draw your own line or follow a survey.")
 	for label in ["Gentle arc", "S turns", "Tree weave"]:
 		shape.add_item(label)
+	_context.add_child(_draft_tools)
+	_button(_draft_tools, undo_bend, "Undo bend", "Remove the last bend (Backspace)", -1, 32)
+	_button(_draft_tools, finish_trail, "Cut trail", "Open this trail (Enter)", -1, 32)
+	for button in [undo_bend, finish_trail]:
+		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		button.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	undo_bend.pressed.connect(func(): undo_bend_requested.emit())
+	finish_trail.pressed.connect(func(): finish_trail_requested.emit())
+	_draft_tools.hide()
 	choice.item_selected.connect(func(index): choice_requested.emit(index))
 	shape.item_selected.connect(func(index): shape_requested.emit(index))
 	_choice_group.hide()
@@ -281,6 +295,11 @@ func show_run_shapes(in_cut_mode: bool, index: int) -> void:
 	_context.visible = in_cut_mode or _choice_group.visible
 	if in_cut_mode:
 		shape.select(clampi(index, 0, shape.item_count - 1))
+
+func show_draft(active: bool, bend_count: int, can_cut := true) -> void:
+	_draft_tools.visible = active
+	undo_bend.disabled = bend_count == 0
+	finish_trail.disabled = not can_cut
 
 func set_hint(message: String) -> void:
 	hint.text = message

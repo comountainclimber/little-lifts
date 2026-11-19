@@ -3,6 +3,7 @@ extends Node3D
 enum View { MANUAL, WAITING, FOLLOWING, RETURNING }
 enum Tool { EXPLORE, CUT, LIFT, VILLAGE, TERRAIN }
 const Resort := preload("res://demo/resort.gd")
+const TrailPlanner := preload("res://demo/trail_planner.gd")
 const Village := preload("res://world/village.gd")
 @onready var mountain = $Mountain
 @onready var hud = $HUD
@@ -30,6 +31,13 @@ var pan_start := Vector3.ZERO
 const DRAG_THRESHOLD := 6.0
 var tapped_skier: Node3D
 var stroke := PackedVector2Array()
+var bends := PackedVector2Array()
+var drafting := false
+var editing_bend := -1
+var preview_dirty := false
+var lift_anchor := Vector2.INF
+var lift_pointer := Vector2.INF
+var precise_terminal := false
 var hint_time := 0.0
 var slow := false
 var closing := false
@@ -60,6 +68,8 @@ func _ready() -> void:
 	hud.tool_requested.connect(set_tool)
 	hud.choice_requested.connect(_select_choice)
 	hud.shape_requested.connect(_select_shape)
+	hud.undo_bend_requested.connect(_undo_bend)
+	hud.finish_trail_requested.connect(_open_draft)
 	hud.follow_requested.connect(_toggle_follow)
 	hud.slow_requested.connect(_toggle_speed)
 	hud.mute_requested.connect(_toggle_mute)
@@ -74,6 +84,25 @@ func _ready() -> void:
 	camera_focus_depth = camera_wide_position.distance_to(mountain.VIEW_CENTER)
 	get_viewport().size_changed.connect(_resize_camera)
 	_wide()
+	if OS.has_feature("web") and JavaScriptBridge.eval("typeof window.littleLiftsSceneReady === 'function'"):
+		_prime_web_renderer.call_deferred()
+
+func _prime_web_renderer() -> void:
+	# WebGL links these programs on their first visible draw. Render the
+	# real guide and groomed snow under the browser loading screen. The
+	# survey and draft controls also warm the corresponding canvas items.
+	set_tool(Tool.CUT)
+	hud.show_draft(true,1)
+	var path := resort.suggestion(selected_lift,run_shape)
+	var piste := preload("res://world/groomed_trail.gd").new()
+	mountain.add_child(piste)
+	piste.build(mountain,path.slice(0,mini(5,path.size())),mountain.CUT_HALF_WIDTH)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	piste.queue_free()
+	set_tool(Tool.EXPLORE)
+	await get_tree().process_frame
+	JavaScriptBridge.eval("window.littleLiftsSceneReady()")
 
 func _apply_mute(muted: bool) -> void:
 	AudioServer.set_bus_mute(AudioServer.get_bus_index(&"Master"), muted)
@@ -91,6 +120,12 @@ func _surface(p: Vector2) -> Vector3:
 	return Vector3(p.x, mountain.surface_height(p.x,p.y), p.y)
 
 func _process(delta: float) -> void:
+	if preview_dirty:
+		preview_dirty = false
+		if tool == Tool.CUT:
+			_draw_edit()
+		elif tool == Tool.LIFT and lift_pointer.is_finite():
+			_preview_lift()
 	_update_follow(delta / Engine.time_scale)
 	if hint_time > 0.0:
 		hint_time -= delta / Engine.time_scale
@@ -121,9 +156,13 @@ func _instructions() -> String:
 		Tool.TERRAIN:
 			return resort.feature_hint(feature_kind)
 		Tool.CUT:
-			return "Draw your own line from the upper ring to the lower ring, or trace the survey."
+			if drafting:
+				return "Click to add a bend. Drag a ring to move it. Cut trail when the line feels right."
+			return "Click to place bends or draw on the snow. Short strokes connect to the lift stations."
 		Tool.LIFT:
-			return "Drag uphill between the survey rings, or choose your own open line."
+			if lift_anchor.is_finite():
+				return "Click the other terminal to build. Hold Alt for precise placement. Esc cancels."
+			return "Click two terminals or drag between them. Trees along the lift line will be cleared."
 		Tool.VILLAGE:
 			if resort.building_count() == 0:
 				return "The waffle hut opens when a rider finishes your first cut run."
@@ -221,19 +260,30 @@ func _show_work_area() -> void:
 	elif tool == Tool.LIFT:
 		_work_camera(PackedVector2Array([mountain.station_base(lift_type), mountain.station_top(lift_type)]), 34.0)
 	elif tool == Tool.TERRAIN:
-		var sites := _feature_points()
-		if not sites.is_empty():
-			for site in resort.feature_sites(feature_kind):
-				for jump in site.jumps:
-					sites.append(jump.approach)
-					sites.append(jump.landing)
-			_work_camera(sites, 27.0)
+		var points := PackedVector2Array()
+		var sites := resort.feature_sites(feature_kind)
+		for site in sites:
+			for jump in site.jumps:
+				points.append(jump.approach)
+				points.append(jump.landing)
+				points.append(jump.point)
+		if feature_kind == 1:
+			# The ridge is permanent. It remains visible both before the tram
+			# opens and after all the available cliff lines have been signed.
+			if points.is_empty():
+				for ledge in mountain.summit_ledges.sites:
+					points.append(ledge.point)
+					points.append(ledge.landing)
+			# Looking across the slope shows the exposed wall and the landing.
+			_work_camera(points,18.5,Vector3(0.82,0.53,1.0))
+		elif not points.is_empty():
+			_work_camera(points,27.0)
 	elif tool == Tool.VILLAGE:
 		_work_camera(PackedVector2Array(Village.PLOTS), 25.0)
 	_show_guide()
 
-func _work_camera(points: PackedVector2Array, minimum: float) -> void:
-	var work_basis := Basis.looking_at(-Vector3(0.27,0.95,1.0).normalized(),Vector3.UP)
+func _work_camera(points: PackedVector2Array, minimum: float, direction := Vector3(0.27,0.95,1.0)) -> void:
+	var work_basis := Basis.looking_at(-direction.normalized(),Vector3.UP)
 	var bounds := AABB()
 	for i in points.size():
 		var p := work_basis.inverse() * _surface(points[i])
@@ -339,15 +389,25 @@ func _return_to_valley() -> void:
 	hud.follow.text = "Follow a rider"
 	hud.set_hint(_instructions())
 
+func _follow_candidate(lift: Node) -> Node3D:
+	for i in range(lift._skiers.size()-1,-1,-1):
+		var rider: Node3D = lift._skiers[i]
+		if not rider.is_queued_for_deletion() and (awaiting_run < 0 or rider.cut_run_id == awaiting_run):
+			return rider
+	return null
+
 func _update_follow(real_delta: float) -> void:
 	if view == View.MANUAL:
 		return
 	if view == View.WAITING:
-		var guests: Array = active_lift.get_node("Skiers").get_children()
-		for index in range(guests.size()-1, -1, -1):
-			if not guests[index].is_queued_for_deletion() and (awaiting_run < 0 or guests[index].cut_run_id == awaiting_run):
-				_lock_on(guests[index])
-				break
+		var rider := _follow_candidate(active_lift)
+		if rider == null and awaiting_run < 0:
+			for lift in resort.lifts:
+				if lift != active_lift:
+					rider = _follow_candidate(lift)
+					if rider != null: break
+		if rider != null:
+			_lock_on(rider)
 		if view == View.WAITING:
 			return
 	var rig: Node3D = mountain.camera_rig
@@ -438,11 +498,17 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_R: _wide()
 			KEY_F: _toggle_follow()
 			KEY_ESCAPE:
-				if dragging:
+				if dragging or drafting or lift_anchor.is_finite():
 					_stop_drag()
 					_show_guide()
 				else:
 					_wide()
+			KEY_BACKSPACE:
+				if not drafting: return
+				_undo_bend()
+			KEY_ENTER, KEY_KP_ENTER:
+				if not drafting: return
+				_open_draft()
 			KEY_1, KEY_2, KEY_3, KEY_4, KEY_5: set_tool(event.keycode - KEY_1)
 			_: return
 	elif event is InputEventMagnifyGesture:
@@ -455,6 +521,7 @@ func _unhandled_input(event: InputEvent) -> void:
 					_zoom(pow(0.88, dir * maxf(event.factor, 0.15)), event.position)
 			MOUSE_BUTTON_LEFT:
 				if event.pressed:
+					precise_terminal = event.alt_pressed
 					_begin_drag(event.position, event.shift_pressed)
 			MOUSE_BUTTON_RIGHT:
 				if event.pressed:
@@ -463,7 +530,8 @@ func _unhandled_input(event: InputEvent) -> void:
 						_show_guide()
 					_begin_map(event.position,MOUSE_BUTTON_RIGHT,true)
 			_: return
-	elif event is InputEventMouseMotion and dragging and (event.button_mask & MOUSE_BUTTON_MASK_LEFT):
+	elif event is InputEventMouseMotion and ((dragging and event.button_mask & MOUSE_BUTTON_MASK_LEFT) or lift_anchor.is_finite()):
+		precise_terminal = event.alt_pressed
 		_update_drag(event.position)
 	else:
 		return
@@ -482,6 +550,12 @@ func _skier_at(screen_pos: Vector2) -> Node3D:
 				radius = dist
 				nearest = skier
 	return nearest
+
+func _station_snap(point: Vector2, target: Vector2) -> Vector2:
+	if precise_terminal:
+		return point
+	var pixels: float = mountain.camera.unproject_position(_surface(point)).distance_to(mountain.camera.unproject_position(_surface(target)))
+	return target if pixels <= 10.0 else point
 
 func _snap(point: Vector2, target: Vector2) -> Vector2:
 	var radius := clampf(mountain.camera.size * 0.074, 1.55, 5.0)
@@ -513,13 +587,20 @@ func _begin_drag(screen_pos: Vector2, pan := false) -> void:
 		return
 	if tool == Tool.CUT:
 		var start: Vector2 = active_lift.run_start()
-		if _snap(hit, start) != start:
-			_message("Start your cut at the upper ring.")
-			return
-		stroke = PackedVector2Array([start])
+		editing_bend = -1
+		if drafting:
+			for i in bends.size():
+				var projected: Vector2 = mountain.camera.unproject_position(_surface(bends[i]))
+				if projected.distance_to(screen_pos) < 12.0:
+					editing_bend = i
+					break
+		var at_start := _station_snap(hit,start) == start if drafting else _snap(hit,start) == start
+		if at_start:
+			editing_bend = -1
+			stroke = PackedVector2Array([start])
 		hud.set_run_grade("")
 	elif tool == Tool.LIFT:
-		drag_base = _snap(hit, mountain.station_base(lift_type))
+		drag_base = lift_anchor if lift_anchor.is_finite() else _station_snap(hit,mountain.station_base(lift_type))
 	dragging = true
 
 func _select_feature_at(screen_pos: Vector2) -> void:
@@ -627,66 +708,150 @@ func _clear_orbit_pitch(yaw: float, requested: float) -> float:
 	return minf(pitch,deg_to_rad(69.0))
 
 func _update_drag(screen_pos: Vector2) -> void:
+	if tool == Tool.LIFT:
+		if lift_anchor.is_finite() or screen_pos.distance_to(drag_origin) > 5.0:
+			lift_pointer = screen_pos
+			preview_dirty = true
+		return
 	var hit = mountain.pick_ground(screen_pos)
 	if hit == null:
 		return
 	if tool == Tool.CUT:
-		if stroke[-1].distance_to(hit) < 0.55:
+		if editing_bend >= 0:
+			bends[editing_bend] = hit
+		elif not stroke.is_empty():
+			if stroke[-1].distance_to(hit) < 0.55:
+				return
+			if drafting:
+				drafting = false
+				bends.clear()
+				hud.show_draft(false,0)
+			stroke.append(hit)
+		elif not drafting and screen_pos.distance_to(drag_origin) >= DRAG_THRESHOLD:
+			stroke = PackedVector2Array([drag_base,hit])
+		else:
 			return
-		stroke.append(hit)
-		guide.trail(mountain, stroke, true, active_lift.run_end())
-		hud.set_run_grade(preload("res://world/run_profile.gd").grade(stroke,mountain))
-	elif screen_pos.distance_to(drag_origin) > 5.0:
-		var end: Vector2 = _snap(hit, mountain.station_top(lift_type))
-		var issue := resort.placement_issue(drag_base, end, lift_type)
-		guide.preview(mountain, drag_base, end, issue.is_empty())
-		hud.set_hint("Release to build " + Resort.TYPES[lift_type] if issue.is_empty() else issue)
+		preview_dirty = true
+
+func _terminals(point: Vector2) -> PackedVector2Array:
+	# Accept either drawing direction. The uphill terminal is always the top.
+	var base := drag_base
+	var top := _station_snap(point,mountain.station_top(lift_type))
+	if mountain.surface_height(top.x,top.y) < mountain.surface_height(base.x,base.y):
+		top = _station_snap(drag_base,mountain.station_top(lift_type))
+		base = _station_snap(point,mountain.station_base(lift_type))
+	return PackedVector2Array([base,top])
+
+func _preview_lift() -> void:
+	var point = mountain.pick_ground(lift_pointer)
+	if point == null: return
+	var ends := _terminals(point)
+	var issue := resort.placement_issue(ends[0],ends[1],lift_type)
+	guide.preview(mountain,ends[0],ends[1],issue.is_empty())
+	hud.set_hint(("Click to build " if lift_anchor.is_finite() else "Release to build ") + Resort.TYPES[lift_type] if issue.is_empty() else issue)
+
+func _draft_line() -> PackedVector2Array:
+	return TrailPlanner.through_bends(active_lift.run_start(),bends,active_lift.run_end())
+
+func _draw_edit(valid := true) -> void:
+	var line := _draft_line() if drafting else stroke
+	if line.is_empty(): return
+	guide.trail(mountain,line,true,active_lift.run_end(),bends,valid)
+	hud.set_run_grade(preload("res://world/run_profile.gd").grade(line,mountain))
+
+func _undo_bend() -> void:
+	if not drafting or bends.is_empty(): return
+	bends.remove_at(bends.size()-1)
+	_show_draft()
+
+func _show_draft() -> void:
+	drafting = true
+	var issue := resort._cut_issue(selected_lift,_draft_line(),false)
+	hud.show_draft(true,bends.size(),issue.is_empty())
+	hint_time = 0.0
+	hud.set_hint(_instructions() if issue.is_empty() else issue+" Move a bend to adjust.")
+	_draw_edit(issue.is_empty())
+
+func _open_draft() -> void:
+	if drafting:
+		_open_trail(_draft_line())
+
+func _open_trail(line: PackedVector2Array) -> void:
+	var issue := resort.cut(selected_lift,line)
+	if not issue.is_empty():
+		if not drafting:
+			bends = TrailPlanner.stroke_bends(line,active_lift.run_start(),active_lift.run_end())
+			_show_draft()
+		_message(issue+" Move a bend to adjust.")
+		return
+	var grade := preload("res://world/run_profile.gd").grade(line,mountain)
+	_stop_drag()
+	tool = Tool.EXPLORE
+	_refresh()
+	_message("%s trail open. Watch for the first tracks." % grade,6.0)
 
 func _finish_drag(screen_pos: Vector2) -> void:
 	dragging = false
+	preview_dirty = false
 	var hit = mountain.pick_ground(screen_pos)
 	if hit == null:
-		_show_guide()
+		if drafting: _show_draft()
+		else: _show_guide()
 		_message("Finish the line on the mountain.")
 		return
 	if tool == Tool.CUT:
 		var end: Vector2 = active_lift.run_end()
-		if _snap(hit, end) != end:
-			_show_guide()
-			_message("Finish at the lower ring to connect the trail.")
-			return
-		if stroke.size() > 1 and stroke[-1].distance_to(end) < 0.55:
-			stroke[-1] = end
+		if editing_bend >= 0:
+			bends[editing_bend] = hit
+			editing_bend = -1
+			_show_draft()
+		elif stroke.size() > 1 and screen_pos.distance_to(drag_origin) >= DRAG_THRESHOLD:
+			if _snap(hit,end) != end or stroke[0] != active_lift.run_start():
+				if stroke[-1].distance_to(hit) > 0.35: stroke.append(hit)
+				# Sketching uphill describes the same piste in the other direction.
+				if _surface(stroke[0]).y < _surface(stroke[-1]).y:
+					stroke.reverse()
+				bends = TrailPlanner.stroke_bends(stroke,active_lift.run_start(),end)
+				stroke.clear()
+				_show_draft()
+				return
+			if stroke[-1].distance_to(end) < 0.55: stroke[-1] = end
+			else: stroke.append(end)
+			_open_trail(stroke)
+			stroke.clear()
 		else:
-			stroke.append(end)
-		var grade := preload("res://world/run_profile.gd").grade(stroke,mountain)
-		var issue := resort.cut(selected_lift, stroke)
-		stroke.clear()
+			stroke.clear()
+			if _station_snap(hit,end) != end and _station_snap(hit,active_lift.run_start()) != active_lift.run_start():
+				if bends.is_empty() or bends[-1].distance_to(hit) > 0.55: bends.append(hit)
+			_show_draft()
+	elif tool == Tool.LIFT:
+		if not lift_anchor.is_finite() and screen_pos.distance_to(drag_origin) < DRAG_THRESHOLD:
+			lift_anchor = drag_base
+			guide.preview(mountain,drag_base,drag_base,true)
+			hud.set_hint(_instructions())
+			return
+		var ends := _terminals(hit)
+		var issue := resort.placement_issue(ends[0],ends[1],lift_type)
 		if not issue.is_empty():
-			_show_guide()
+			guide.preview(mountain,ends[0],ends[1],false)
 			_message(issue)
 			return
-		tool = Tool.EXPLORE
-		guide.clear()
-		_refresh()
-		_message("%s trail open. Watch for the first tracks." % grade, 6.0)
-	elif screen_pos.distance_to(drag_origin) >= 7.0:
-		var end: Vector2 = _snap(hit, mountain.station_top(lift_type))
-		var issue := resort.placement_issue(drag_base, end, lift_type)
-		if not issue.is_empty():
-			_show_guide()
-			_message(issue)
-			return
-		if resort.place_lift(drag_base, end, lift_type):
-			selected_lift = resort.lifts.size() - 1
+		if resort.place_lift(ends[0],ends[1],lift_type):
+			selected_lift = resort.lifts.size()-1
 			active_lift = resort.lifts[selected_lift]
+			var built: String = Resort.TYPES[lift_type]
 			set_tool(Tool.EXPLORE)
-			guide.placed(mountain, drag_base, end)
-			_message(Resort.TYPES[lift_type] + " is running. Cut a trail from its upper station.")
-	else:
-		_show_guide()
+			guide.placed(mountain,ends[0],ends[1])
+			_message(built+" is running. Cut a trail from its upper station.")
 
 func _stop_drag() -> void:
+	drafting = false
+	bends.clear()
+	editing_bend = -1
+	preview_dirty = false
+	lift_anchor = Vector2.INF
+	lift_pointer = Vector2.INF
+	hud.show_draft(false,0)
 	map_button = MOUSE_BUTTON_NONE
 	moved_map = false
 	dragging = false

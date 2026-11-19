@@ -1,5 +1,6 @@
 extends Node3D
 
+const RockFace := preload("res://world/slope_feature.gd")
 const GroomedTrail := preload("res://world/groomed_trail.gd")
 
 var terrain: Node
@@ -14,6 +15,51 @@ const TREE_PARTS := ["trunk", "spruce dark", "spruce blue", "needles", "snow on 
 var trees: Array[Dictionary] = []
 var _cells := {}
 var _felled := {}
+# Each tree has a stable simulation ID and a movable draw slot. A cut
+# swaps only the affected instances behind the visible prefix of each mesh.
+class ForestBatch extends MultiMeshInstance3D:
+	var slot_by_tree := PackedInt32Array()
+	var tree_by_slot := PackedInt32Array()
+	var poses: Array[Transform3D] = []
+	var standing := 0
+
+	func initialize(part: Mesh, tree_count: int) -> void:
+		multimesh = MultiMesh.new()
+		multimesh.transform_format = MultiMesh.TRANSFORM_3D
+		multimesh.mesh = part
+		slot_by_tree.resize(tree_count)
+		slot_by_tree.fill(-1)
+
+	func append(tree_id: int, pose: Transform3D) -> void:
+		slot_by_tree[tree_id] = poses.size()
+		tree_by_slot.append(tree_id)
+		poses.append(pose)
+
+	func upload() -> void:
+		multimesh.instance_count = poses.size()
+		for i in poses.size():
+			multimesh.set_instance_transform(i,poses[i])
+		standing = poses.size()
+		multimesh.visible_instance_count = standing
+
+	func set_standing(tree_id: int, visible_now: bool) -> void:
+		var slot := slot_by_tree[tree_id]
+		if slot < 0 or (slot < standing) == visible_now:
+			return
+		var other := standing if visible_now else standing-1
+		standing += 1 if visible_now else -1
+		if slot != other:
+			var other_id := tree_by_slot[other]
+			var old_pose := poses[slot]
+			poses[slot] = poses[other]
+			poses[other] = old_pose
+			tree_by_slot[slot] = other_id
+			tree_by_slot[other] = tree_id
+			slot_by_tree[tree_id] = other
+			slot_by_tree[other_id] = slot
+			multimesh.set_instance_transform(slot,poses[slot])
+			multimesh.set_instance_transform(other,poses[other])
+
 var _forest_batches := {}
 var _rock_footprints := PackedVector3Array()
 var _stable_tree_count := 0
@@ -54,12 +100,6 @@ func _define_pieces() -> void:
 	_register("spruce blue", spruce.duplicate(), "#668d90")
 	_register("needles", spruce.duplicate(), "#74949a")
 	_register("snow on needles", spruce.duplicate(), "#c4d4dc")
-	var rock := SphereMesh.new()
-	rock.radius = 0.5
-	rock.height = 1.0
-	rock.radial_segments = 6
-	rock.rings = 2
-	_register("rock", rock, "#929cae")
 
 
 func _register(id: String, mesh: PrimitiveMesh, color: String, glow := 0.0) -> void:
@@ -305,12 +345,37 @@ func _trees_near(a: Vector2, b: Vector2, margin: float, hits: Dictionary, first_
 
 
 func set_cleared(ids: PackedInt32Array, cleared: bool) -> void:
+	var changed := false
+	var batches := _forest_batches.values()
 	for id in ids:
+		if _felled.has(id) == cleared:
+			continue
+		changed = true
 		if cleared:
 			_felled[id] = true
 		else:
 			_felled.erase(id)
-	_rebuild_forest()
+		for batch: ForestBatch in batches:
+			batch.set_standing(id,not cleared)
+	if changed:
+		for batch: ForestBatch in batches:
+			batch.multimesh.visible_instance_count = batch.standing
+		terrain.route_revision += 1
+
+
+# Read-only until both stations and the complete return have been surveyed.
+# Gather the same trees once even where the cable, tow path and queue meet.
+func lift_corridor_trees(base: Vector2, summit: Vector2, tier: int, descent) -> PackedInt32Array:
+	var hits := {}
+	var cable_margin: float = [1.12,1.59,2.14][tier]
+	_trees_near(base,summit,cable_margin,hits,false)
+	_trees_near(descent.exit,descent.queue[4],1.60,hits,false)
+	_trees_near(base,descent.queue[-1],0.62,hits,false)
+	_trees_near(summit,descent.exit,0.80,hits,false)
+	if tier == 2:
+		_trees_near(base-descent.forward*3.55,base+descent.forward*1.42,1.40,hits,false)
+		_trees_near(summit-descent.forward*2.65,summit+descent.forward*1.42,1.40,hits,false)
+	return PackedInt32Array(hits.keys())
 
 
 func clear_legacy_corridor(line: PackedVector2Array, width: float) -> void:
@@ -324,33 +389,28 @@ func clear_legacy_corridor(line: PackedVector2Array, width: float) -> void:
 
 
 func _rebuild_forest() -> void:
-	for part in TREE_PARTS:
-		transforms[part].clear()
+	for key in TREE_PARTS:
+		var batch := ForestBatch.new()
+		batch.name = "Forest " + key
+		batch.initialize(pieces[key],trees.size())
+		_forest_batches[key] = batch
+		add_child(batch)
 	for i in trees.size():
-		if _felled.has(i):
-			continue
 		var tree := trees[i]
 		var h: float = tree.height
 		var p: Vector3 = tree.origin
 		var yaw: Basis = tree.yaw
-		_piece("trunk", p + Vector3.UP * h * 0.16, Vector3(0.074, 0.33, 0.074) * h, yaw)
-		_piece("spruce blue" if tree.blue else "spruce dark", p + Vector3.UP * h * 0.42, Vector3(0.62, 0.62, 0.62) * h, yaw)
-		_piece("needles", p + Vector3.UP * h * 0.68, Vector3(0.47, 0.65, 0.47) * h, yaw)
+		_forest_batches.trunk.append(i, Transform3D(yaw.scaled_local(Vector3(0.074,0.33,0.074)*h), p+Vector3.UP*h*0.16))
+		var crown: ForestBatch = _forest_batches["spruce blue" if tree.blue else "spruce dark"]
+		crown.append(i, Transform3D(yaw.scaled_local(Vector3(0.62,0.62,0.62)*h), p+Vector3.UP*h*0.42))
+		_forest_batches.needles.append(i, Transform3D(yaw.scaled_local(Vector3(0.47,0.65,0.47)*h), p+Vector3.UP*h*0.68))
 		if tree.snow:
-			_piece("snow on needles", p + Vector3.UP * h * 0.83, Vector3(0.235, 0.36, 0.235) * h, yaw)
-	for key in TREE_PARTS:
-		if not _forest_batches.has(key):
-			var node := MultiMeshInstance3D.new()
-			node.name = "Forest " + key
-			node.multimesh = MultiMesh.new()
-			node.multimesh.transform_format = MultiMesh.TRANSFORM_3D
-			node.multimesh.mesh = pieces[key]
-			_forest_batches[key] = node
-			add_child(node)
-		var batch: MultiMesh = _forest_batches[key].multimesh
-		batch.instance_count = transforms[key].size()
-		for i in batch.instance_count:
-			batch.set_instance_transform(i, transforms[key][i])
+			_forest_batches["snow on needles"].append(i, Transform3D(yaw.scaled_local(Vector3(0.235,0.36,0.235)*h), p+Vector3.UP*h*0.83))
+	for batch: ForestBatch in _forest_batches.values():
+		batch.upload()
+		for id: int in _felled:
+			batch.set_standing(id,false)
+		batch.multimesh.visible_instance_count = batch.standing
 
 
 func trail_sign(points: PackedVector2Array, width: float) -> Node3D:
@@ -393,6 +453,8 @@ func _sign_piece(host: Node3D, key: String, pos: Vector3, size: Vector3, yaw: Ba
 
 
 func _place_rocks() -> void:
+	var stonework := SurfaceTool.new()
+	stonework.begin(Mesh.PRIMITIVE_TRIANGLES)
 	# Granite breaks through along the high divide and in ribs outside the ski lines.
 	for cl: Vector3 in [Vector3(-34, -69, 11), Vector3(-10, -75, 12), Vector3(-42, -49, 9), Vector3(-32, -57, 6), Vector3(-1, -64, 10), Vector3(-38, -47, 7),
 			Vector3(29, -47, 8), Vector3(39, -28, 7), Vector3(-34, -11, 5), Vector3(28, -4, 3)]:
@@ -400,11 +462,83 @@ func _place_rocks() -> void:
 			var p := Vector2(cl.x + random.randf_range(-4.4, 4.4), cl.y + random.randf_range(-2.0, 2.0))
 			var width := random.randf_range(0.6, 3.6) if p.y < -42 else random.randf_range(0.6, 1.8)
 			p *= terrain.MAP_SCALE
-			var yaw := Basis(Vector3.UP, random.randf() * TAU)
-			_rock_footprints.append(Vector3(p.x, p.y, width * 0.55))
-			terrain.reserve_footprint(p, width * 0.55)
-			var foot := Vector3(p.x, terrain.surface_height(p.x, p.y), p.y)
-			_piece("rock", foot, Vector3(width, width * 0.55, width * 0.69), yaw)
+			# Keep the original random draw. Rock positions and subsequent forest seeds
+			# also identify obstacles in saved, player-cut runs.
+			var phase := random.randf() * TAU
+			var radius := width * 0.55
+			_rock_footprints.append(Vector3(p.x, p.y, radius))
+			terrain.reserve_footprint(p, radius)
+			_expose_seam(stonework, p, radius, phase)
+	var material := StandardMaterial3D.new()
+	material.vertex_color_use_as_albedo = true
+	material.roughness = 1.0
+	stonework.set_material(material)
+	var bedrock := MeshInstance3D.new()
+	bedrock.name = "Shoulder geology"
+	bedrock.mesh = stonework.commit()
+	add_child(bedrock)
+
+
+func _expose_seam(surface: SurfaceTool, center: Vector2, radius: float, phase: float) -> void:
+	# The same granite beds emerge in several places along a contour. A
+	# transverse joint offsets the two faces while the outer ends bury in snow.
+	var strike := Vector2.from_angle(-0.20 + 0.14 * sin(center.y * 0.055) + 0.06 * sin(phase))
+	var downhill := Vector2(-strike.y, strike.x)
+	var bed := 0.5 + 0.5 * cos(center.dot(downhill) * 0.92 + sin(center.x * 0.19))
+	var rise := radius * lerpf(0.38, 0.77, bed)
+	var joints := PackedFloat32Array([-0.95])
+	if radius > 0.62 and sin(phase + center.x * 0.07) > -0.44:
+		joints.append(0.31 * sin(phase * 1.7))
+	if radius > 1.10 and cos(phase * 1.72) > 0.42:
+		joints.append(0.54 + 0.06 * sin(phase))
+	joints.append(0.95)
+	var dx: float = _height(center.x - 0.3,center.y) - _height(center.x + 0.3,center.y)
+	var dz: float = _height(center.x,center.y - 0.3) - _height(center.x,center.y + 0.3)
+	var scale_factor: float = terrain.MAP_SCALE
+	var pigment: Color = terrain.snow_pigment(center.x/scale_factor, center.y/scale_factor, _height(center.x,center.y)/scale_factor, Vector3(dx,0.6,dz).normalized())
+	var snow := pigment.linear_to_srgb()
+	for slab in range(joints.size() - 1):
+		var side := sin(phase + slab * 2.3)
+		var start := joints[slab] if slab == 0 else joints[slab] + 0.015
+		var end := joints[slab + 1] if slab == joints.size() - 2 else joints[slab + 1] - 0.020
+		var previous := PackedVector3Array()
+		for i in 4:
+			var u := lerpf(start, end, float(i) / 3.0)
+			var tip := 1.0 - smoothstep(0.50,1.0,absf(u))
+			var fracture := phase + side * 1.7
+			var nick := 0.04 * sin(9.0*u + fracture) + 0.045 * side
+			var crest := tip * rise * (0.85 + 0.14*sin(5.0*u+phase) + 0.12*side)
+			var ring := PackedVector3Array()
+			# Buried back, snow-covered shoulder, exposed brow, inset cleft,
+			# small foot shelf, and the toe returning below the terrain.
+			const DEPTH := [-0.47, -0.22, 0.10, 0.075, 0.23, 0.38]
+			const ELEVATION := [-0.07, 0.69, 1.0, 0.43, 0.40, -0.07]
+			for row in DEPTH.size():
+				var across := nick + float(DEPTH[row]) * lerpf(0.28, 1.0, tip)
+				var oblique := u + across * 0.53 * sin(phase + 1.7)
+				var offset := (strike * oblique + downhill * across).limit_length(0.98) * radius
+				var p := center + offset
+				var y: float = terrain.surface_height(p.x,p.y) + float(ELEVATION[row]) * crest
+				if row == 0 or row == DEPTH.size() - 1:
+					y -= 0.06
+				ring.append(Vector3(p.x,y,p.y))
+			if i > 0:
+				var warm := 0.48 + 0.37 * sin(fracture + u*2.1)
+				var granite := Color("#75818d").lerp(Color("#9a8e88"),warm)
+				var snow_on_brow := smoothstep(-0.28,0.80,sin(fracture + 3.0*u))
+				var colors := [snow, granite.lerp(snow,0.16+0.75*snow_on_brow),
+					granite, Color("#626c79").lerp(snow,0.36*snow_on_brow),
+					granite.lerp(Color("#525c68"),0.55)]
+				for row in colors.size():
+					var normal := Vector3.UP if row < 2 or row == 3 else Vector3(downhill.x,0,downhill.y)
+					RockFace._face(surface,previous[row],ring[row],ring[row+1],normal,colors[row])
+					RockFace._face(surface,previous[row],ring[row+1],previous[row+1],normal,colors[row])
+			if (slab < joints.size()-2 and i == 3) or (slab > 0 and i == 0):
+				# An inclined cross-joint exposes fresh, cooler granite.
+				var face := Vector3(strike.x,0,strike.y) * (1.0 if i == 3 else -1.0)
+				for row in range(1, ring.size()-1):
+					RockFace._face(surface,ring[0],ring[row],ring[row+1],face,Color("#65707e"))
+			previous = ring
 
 
 func _make_batches() -> void:

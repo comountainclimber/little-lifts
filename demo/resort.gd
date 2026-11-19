@@ -12,6 +12,8 @@ var village := Village.new()
 var lifts: Array[Node] = []
 var runs: Array[Dictionary] = []
 var _feature_surveys := {}
+var _suggestions := {}
+var _survey_revision := -1
 var _built_jumps: Array[Dictionary] = []
 var _opened_ledges := {}
 var unlocked := 0
@@ -21,6 +23,8 @@ var save_path := "user://little-lifts-resort-v1.save"
 var _restoring := false
 var _restore_complete := true
 var _legacy_starter := false
+var _placement_stamp: Array = []
+var _placement_result := {}
 
 func setup(mountain: Node) -> void:
 	terrain = mountain
@@ -37,6 +41,22 @@ func building_count() -> int:
 	return mini(3, highest_built + 1)
 
 func placement_issue(a: Vector2, b: Vector2, tier: int) -> String:
+	return _preview_lift(a,b,tier).issue
+
+func _preview_lift(a: Vector2, b: Vector2, tier: int) -> Dictionary:
+	# The release event and build reuse the geometry from the exact preview
+	# endpoints. Construction elsewhere invalidates it even with a still mouse.
+	var stamp := [a,b,tier,terrain.route_revision,lifts.size(),runs.size(),_built_jumps.size(),unlocked,highest_built]
+	if stamp != _placement_stamp:
+		var result := {}
+		result.issue = _survey_lift(a,b,tier,result,true)
+		_placement_result = result
+		_placement_stamp = stamp
+	return _placement_result
+
+func _survey_lift(a: Vector2, b: Vector2, tier: int, result: Dictionary, clear_woods: bool, preferred_side := Vector2.ZERO) -> String:
+	if not a.is_finite() or not b.is_finite():
+		return "Choose two points on the mountain."
 	if tier < 0 or tier > unlocked:
 		return "Open the lower mountain first."
 	var length := a.distance_to(b)
@@ -44,8 +64,9 @@ func placement_issue(a: Vector2, b: Vector2, tier: int) -> String:
 		return "Drag farther uphill to place the upper station."
 	if length > [30.0, 59.0, 112.0][tier] * terrain.MAP_SCALE:
 		return "Bring the upper station closer for this lift."
-	var top: Vector2 = terrain.station_top(tier)
-	if terrain.height_at(b.x, b.y) > terrain.height_at(top.x, top.y) + 1.4 * terrain.MAP_SCALE:
+	var access := maxi(tier,highest_built)
+	var top: Vector2 = terrain.station_top(access)
+	if access < 2 and terrain.height_at(b.x,b.y) > terrain.height_at(top.x,top.y)+1.4*terrain.MAP_SCALE:
 		return "This elevation needs a higher-capacity lift."
 	if not _restoring and (terrain.summit_ledges.contains(a,1.75) or terrain.summit_ledges.contains(b,1.75)):
 		return "Leave room beside the natural rock ledge for the station."
@@ -61,36 +82,105 @@ func placement_issue(a: Vector2, b: Vector2, tier: int) -> String:
 			continue
 		if SlopeFeature.too_close(a, b, jump.approach, jump.landing, 1.9 + jump.width * 0.5):
 			return "Keep the new cable clear of the jumps and landings."
-	if not terrain.route_clear(a, b, 0.65):
-		return "Find an open strip for the lift line."
-	var start_h: float = terrain.surface_height(a.x, a.y)
-	if terrain.surface_height(b.x, b.y) - start_h < 1.4:
+	if not terrain.lift_ground_clear(a,b,0.65):
+		return "Keep the lift line inside the mountain and clear of buildings and rocks."
+	var gain: float = terrain.surface_height(b.x,b.y)-terrain.surface_height(a.x,a.y)
+	if gain < 1.4:
 		return "Place the second station higher up the hill."
-	if not Lift.descent_fits(a, b, terrain, tier):
-		return "Try the near face, with a clear return to the lower station."
+	if clear_woods:
+		var physical := _station_issue(a,b,tier)
+		if not physical.is_empty():
+			return physical
+	elif not terrain.route_clear(a,b,0.65):
+		return "Find an open strip for the lift line."
+	# Keep a pre-existing open descent where possible. When the trees close
+	# both sides of the line, survey a swath that can be cleared in one go.
+	var plan := Lift._choose_descent(a,b,terrain,tier,false,preferred_side)
+	if clear_woods and (plan == null or (preferred_side != Vector2.ZERO and plan.side.dot(preferred_side) < 0.0)):
+		plan = Lift._choose_descent(a,b,terrain,tier,true,preferred_side)
+	if plan == null:
+		return "Give the upper station a skiable return to the loading area."
+	result.plan = plan
 	return ""
 
-func place_lift(a: Vector2, b: Vector2, tier: int, legacy_supports := false) -> bool:
-	if not placement_issue(a, b, tier).is_empty():
+func _station_issue(a: Vector2, b: Vector2, tier: int) -> String:
+	var terminal_margin: float = [0.85,1.25,1.65][tier]
+	var forward := a.direction_to(b)
+	for station: Vector2 in [a,b]:
+		var depth := 0.78 if tier != 2 else 1.58
+		if not terrain.lift_ground_clear(station-forward*depth,station+forward*depth,terminal_margin):
+			return "Give the station building a little room beside the rocks and lodges."
+	for other in lifts:
+		for existing: Vector2 in [other._base,other._summit]:
+			if Geometry2D.get_closest_point_to_segment(existing,a,b).distance_to(existing) < terminal_margin+1.25:
+				return "Leave room for the neighbouring station and its passengers."
+		for station: Vector2 in [a,b]:
+			if Geometry2D.get_closest_point_to_segment(station,other._base,other._summit).distance_to(station) < terminal_margin+0.70:
+				return "Leave room for the neighbouring lift line."
+	var spans := clampi(ceili(a.distance_to(b)/(24.0 if tier == 2 else 12.5)),2,8)
+	for i in range(1,spans):
+		var tower := a.lerp(b,float(i)/spans)
+		if terrain.summit_ledges.contains(tower,0.40):
+			return "Move the line off the rock ledge so the tower can stand in snow."
+		for run in runs:
+			var line: PackedVector2Array = lifts[run.lift]._runs[run.id]
+			for j in range(1,line.size()):
+				if Geometry2D.get_closest_point_to_segment(tower,line[j-1],line[j]).distance_to(tower) < 1.05:
+					return "Shift the line a little to keep its tower off an existing run."
+	return ""
+
+func place_lift(a: Vector2, b: Vector2, tier: int, legacy_supports := false, clear_woods := true, preferred_side := Vector2.ZERO) -> bool:
+	var result := {}
+	if not _restoring and clear_woods and preferred_side == Vector2.ZERO:
+		result = _preview_lift(a,b,tier)
+	else:
+		result.issue = _survey_lift(a,b,tier,result,clear_woods,preferred_side)
+	if not result.issue.is_empty():
 		return false
-	_add_lift(a, b, tier, legacy_supports)
-	_record({"event":"lift", "a":a, "b":b, "tier":tier})
+	var cleared := PackedInt32Array()
+	if clear_woods:
+		cleared = terrain.scenery.lift_corridor_trees(a,b,tier,result.plan)
+		if not cleared.is_empty():
+			terrain.scenery.set_cleared(cleared,true)
+	if not _add_lift(a,b,tier,legacy_supports,result.plan):
+		if not cleared.is_empty():
+			terrain.scenery.set_cleared(cleared,false)
+		return false
+	var event := {"event":"lift","a":a,"b":b,"tier":tier}
+	if clear_woods:
+		event.corridor_side = result.plan.side
+	_record(event)
 	changed.emit()
 	return true
 
-func _add_lift(a: Vector2, b: Vector2, tier: int, legacy_supports := false) -> void:
+func _add_lift(a: Vector2, b: Vector2, tier: int, legacy_supports := false, accepted: Lift.Descent = null) -> bool:
 	var lift := Lift.new()
 	if legacy_supports:
 		lift.support_spacing_scale = terrain.MAP_SCALE
 	add_child(lift)
-	lift.configure(a, b, terrain, tier)
+	lift.configure(a,b,terrain,tier,accepted,lifts.is_empty() or _restoring)
+	if lift._terrain == null:
+		lift.free()
+		return false
 	lift.run_completed.connect(_skied.bind(lifts.size()))
 	lifts.append(lift)
+	_suggestions.clear()
 	_feature_surveys.clear()
-	highest_built = maxi(highest_built, tier)
-	village.grow(highest_built + (1 if unlocked > 0 else 0))
+	highest_built = maxi(highest_built,tier)
+	village.grow(highest_built+(1 if unlocked>0 else 0))
+	return true
+
+func _sync_surveys() -> void:
+	if _survey_revision != terrain.route_revision:
+		_suggestions.clear()
+		_feature_surveys.clear()
+		_survey_revision = terrain.route_revision
 
 func suggestion(lift_index: int, shape := 0) -> PackedVector2Array:
+	_sync_surveys()
+	var key := Vector2i(lift_index,shape)
+	if _suggestions.has(key):
+		return _suggestions[key].duplicate()
 	var lift: Node = lifts[lift_index]
 	var start: Vector2 = lift.run_start()
 	var finish: Vector2 = lift.run_end()
@@ -102,9 +192,11 @@ func suggestion(lift_index: int, shape := 0) -> PackedVector2Array:
 		for i in line.size():
 			line[i] += entry.lerp(exit, float(i) / (line.size() - 1))
 		if _cut_issue(lift_index, line, false).is_empty():
+			_suggestions[key] = line.duplicate()
 			return line
 		if first.is_empty():
 			first = line
+	_suggestions[key] = first.duplicate()
 	return first
 
 func _cut_issue(lift_index: int, line: PackedVector2Array, legacy: bool) -> String:
@@ -113,9 +205,13 @@ func _cut_issue(lift_index: int, line: PackedVector2Array, legacy: bool) -> Stri
 	var lift: Node = lifts[lift_index]
 	if line[0].distance_to(lift.run_start()) > 2.0 or line[-1].distance_to(lift.run_end()) > 2.0:
 		return "Connect both marked ends so riders can use the run."
-	var problem: String = terrain.cut_issue(line, not legacy)
+	var problem: String = terrain.cut_issue(line, false)
 	if not problem.is_empty():
 		return problem
+	if not legacy and not _restoring:
+		for run in runs:
+			if run.lift == lift_index and not _has_new_snow(line,run.survey):
+				return "This line is already open. Draw a branch into fresh snow."
 	# Never cut across a lift tower. The two ends lead onto the adjacent snow.
 	for other in lifts:
 		for k in range(1, other._heights.size() - 1):
@@ -125,19 +221,36 @@ func _cut_issue(lift_index: int, line: PackedVector2Array, legacy: bool) -> Stri
 					return "Curve around the lift tower."
 	return ""
 
+static func _has_new_snow(line: PackedVector2Array, previous: Curve2D) -> bool:
+	# Shared lift approaches are expected. A sustained branch more than a
+	# half-lane away opens a real new descent, including above the tree line.
+	var fresh := 0.0
+	for i in range(1,line.size()):
+		var start := line[i-1]
+		var span := start.distance_to(line[i])
+		var steps := maxi(1,ceili(span / 1.35))
+		for j in range(1,steps+1):
+			var p := start.lerp(line[i],float(j)/steps)
+			if p.distance_squared_to(previous.get_closest_point(p)) < 1.55 * 1.55:
+				fresh = 0.0
+			else:
+				fresh += span / steps
+				if fresh >= 2.6:
+					return true
+	return false
+
 func cut(lift_index: int, line: PackedVector2Array, legacy := false) -> String:
 	var issue := _cut_issue(lift_index, line, legacy)
 	if not issue.is_empty():
 		return issue
 	var lift: Node = lifts[lift_index]
-	var felled: int = terrain.cut_run(line, not legacy)
-	if felled <= 0 and not legacy:
-		return "Bend the trail into the pines to open a new run."
+	terrain.apply_surveyed_cut(line)
 	var id: int = lift.register_run(line)
 	if id < 0:
 		terrain.undo_last_cut()
 		return "Ease that bend so riders can ski it all the way through."
 	runs.append({"lift":lift_index, "id":id, "used":false, "survey":SlopeFeature.survey_curve(line), "features":{}})
+	_suggestions.clear()
 	_feature_surveys.clear()
 	_record({"event":"cut", "lift":lift_index, "line":line.duplicate()})
 	changed.emit()
@@ -173,6 +286,7 @@ func add_building(kind: int, plot: int) -> bool:
 	return true
 
 func feature_sites(kind: int) -> Array[Dictionary]:
+	_sync_surveys()
 	var sites: Array[Dictionary] = []
 	if kind != SlopeFeature.PARK and kind != SlopeFeature.EXTREME:
 		return sites
@@ -333,7 +447,7 @@ func _restore(data: Dictionary) -> void:
 						# Furniture keeps its original size on the enlarged map.
 						# Clear infill from the cable, exit lane, and queue.
 						terrain.scenery.clear_legacy_corridor(PackedVector2Array([e.a,e.b]), 3.9)
-					ok = place_lift(e.a, e.b, e.tier, e.get("legacy_corridor", false))
+					ok = place_lift(e.a,e.b,e.tier,e.get("legacy_corridor",false),e.has("corridor_side"),e.get("corridor_side",Vector2.ZERO))
 			"cut":
 				if e.get("line") is PackedVector2Array and e.get("lift") is int:
 					var legacy: bool = e.get("legacy_corridor", false)

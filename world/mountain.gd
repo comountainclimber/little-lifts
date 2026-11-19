@@ -27,6 +27,8 @@ var environment := Environment.new()
 var sun := DirectionalLight3D.new()
 var sky_material := ShaderMaterial.new()
 var _snow_samples := PackedFloat32Array()
+var _snow_normals := PackedVector3Array()
+var _snow_colors := PackedColorArray()
 const CUT_HALF_WIDTH := 2.5
 const BASES := [Vector2(0, 9), Vector2(7, 8), Vector2(-16, 12)]
 const TOPS := [Vector2(-13, -7.5), Vector2(18, -33), Vector2(-24, -68.5)]
@@ -34,6 +36,7 @@ var scenery: Node3D
 var _last_cleared := PackedInt32Array()
 var _last_sign: Node3D
 var _footprint_cells := {}
+var route_revision := 0
 const CELL_SIZE := 3.0
 
 
@@ -113,6 +116,17 @@ func height_at(x: float, z: float) -> float:
 	return MAP_SCALE * local
 
 
+func _summit_beds(x: float, z: float) -> float:
+	var fade := smoothstep(-35.0,-28.0,x) * (1.0-smoothstep(-8.0,-2.0,x))
+	var lower := z+62.25-1.35*sin((x+15.6)*0.52)-0.42*sin(x*0.92)
+	var upper := z+67.75-1.79*cos((x+28.0)*0.36)+0.065*(x+20.0)
+	# Snow builds up slowly on the windward back. On the downhill side the
+	# bed drops away within a few metres, with gaps where gullies cross it.
+	var lower_brow := smoothstep(-4.7,-0.35,lower)*(1.0-smoothstep(-0.35,1.25,lower))
+	var upper_brow := smoothstep(-5.4,-0.40,upper)*(1.0-smoothstep(-0.40,1.48,upper))
+	return fade*(lower_brow*(0.72+0.32*cos(x*0.65)) + upper_brow*(1.12+0.49*sin(x*0.39)))
+
+
 func surface_height(x: float, z: float) -> float:
 	# Tracks and ski edges must touch the tessellated triangles, even when the
 	# continuous height function bows a few centimeters above or below a face.
@@ -128,6 +142,28 @@ func surface_height(x: float, z: float) -> float:
 	if f.x + f.y <= 1.0:
 		return (1.0 - f.x - f.y) * _snow_samples[i] + f.x * right + f.y * down
 	return (f.x + f.y - 1.0) * _snow_samples[i + SNOW_COLUMNS + 1] + (1.0 - f.x) * down + (1.0 - f.y) * right
+
+
+# Groomer corduroy uses the position, light and tint of the very triangles
+# underneath it. Packed arrays are shared with the mesh builder.
+func append_trail_vertex(p: Vector2, positions: PackedVector3Array, normals: PackedVector3Array, colors: PackedColorArray) -> void:
+	var uv := (p-SNOW_MIN)/(SNOW_MAX-SNOW_MIN)*Vector2(SNOW_COLUMNS-1,SNOW_ROWS-1)
+	var col := clampi(floori(uv.x),0,SNOW_COLUMNS-2)
+	var row := clampi(floori(uv.y),0,SNOW_ROWS-2)
+	var f := uv-Vector2(col,row)
+	var i := row*SNOW_COLUMNS+col
+	var diagonal := f.x+f.y
+	var a := i
+	var b := i+1
+	var c := i+SNOW_COLUMNS
+	var weights := Vector3(1.0-diagonal,f.x,f.y)
+	if diagonal > 1.0:
+		a = i+SNOW_COLUMNS+1
+		weights = Vector3(diagonal-1.0,1.0-f.y,1.0-f.x)
+	var y := _snow_samples[a]*weights.x + _snow_samples[b]*weights.y + _snow_samples[c]*weights.z
+	positions.append(Vector3(p.x,y+0.014,p.y))
+	normals.append((_snow_normals[a]*weights.x+_snow_normals[b]*weights.y+_snow_normals[c]*weights.z).normalized())
+	colors.append(_snow_colors[a]*weights.x+_snow_colors[b]*weights.y+_snow_colors[c]*weights.z)
 
 
 func _in_bounds(p: Vector2) -> bool:
@@ -148,6 +184,7 @@ func playable_at(p: Vector2) -> bool:
 
 
 func reserve_footprint(center: Vector2, radius: float) -> void:
+	route_revision += 1
 	var footprint := Vector3(center.x, center.y, radius)
 	var first := Vector2i(((center - Vector2.ONE * radius) / CELL_SIZE).floor())
 	var last := Vector2i(((center + Vector2.ONE * radius) / CELL_SIZE).floor())
@@ -179,6 +216,12 @@ func _fixed_clear(a: Vector2, b: Vector2, margin: float) -> bool:
 	return true
 
 
+# Survey a potential lift before removing timber. Fixed buildings, outcrops
+# and the playable boundary still protect the station, return and queue.
+func lift_ground_clear(a: Vector2, b: Vector2, margin: float) -> bool:
+	return _fixed_clear(a,b,margin)
+
+
 func route_clear(start: Vector2, end: Vector2, margin := 0.0) -> bool:
 	return _fixed_clear(start, end, margin) and (scenery == null or scenery.forest_clear(start, end, margin))
 
@@ -203,13 +246,13 @@ func pick_ground(screen_pos: Vector2) -> Variant:
 	for step in range(floori(previous_t) + 1, ceili(limit) + 1):
 		var t := float(step)
 		var p := origin + direction * t
-		if p.y <= height_at(p.x, p.z):
+		if p.y <= surface_height(p.x, p.z):
 			var low := previous_t
 			var high := t
 			for iteration in 12:
 				var middle := (low + high) * 0.5
 				var point := origin + direction * middle
-				if point.y > height_at(point.x, point.z):
+				if point.y > surface_height(point.x, point.z):
 					low = middle
 				else:
 					high = middle
@@ -271,6 +314,10 @@ func cut_issue(points: PackedVector2Array, require_standing_trees := true) -> St
 func cut_run(points: PackedVector2Array, require_standing_trees := true) -> int:
 	if not cut_issue(points, require_standing_trees).is_empty():
 		return 0
+	return apply_surveyed_cut(points)
+
+
+func apply_surveyed_cut(points: PackedVector2Array) -> int:
 	_last_cleared = scenery.trees_along(points, CUT_HALF_WIDTH)
 	scenery.set_cleared(_last_cleared, true)
 	_last_sign = scenery.trail_sign(points, CUT_HALF_WIDTH)
@@ -322,7 +369,15 @@ func snow_pigment(x: float, z: float, y: float, normal: Vector3) -> Color:
 	var drifts := 0.10 * (0.5 + 0.5 * sin(x * 0.37 + sin(z * 0.52) + z * 1.20))
 	var pigment := SNOW.lerp(SHADOW_SNOW, hollow + leeward + drifts)
 	var alpenglow := smoothstep(5.0, 11.5, y) * (0.36 + 0.56 * smoothstep(0.25, 0.85, 0.5 - normal.x))
-	return pigment.lerp(CREST_SNOW, alpenglow).srgb_to_linear()
+	pigment = pigment.lerp(CREST_SNOW, alpenglow)
+	if x > -35.0 and x < -2.0 and z > -80.0 and z < -54.0:
+		# Only the steeper sides of the exposed beds lose their snow. Broken
+		# stretches of stone connect the larger ledges across the open face.
+		var bed := smoothstep(0.10,0.66,_summit_beds(x,z))
+		var lee_fall := _summit_beds(x,z-0.45)-_summit_beds(x,z+0.45)
+		var scour := bed * smoothstep(-0.16,0.78,lee_fall+0.6*(1.0-normal.y))
+		pigment = pigment.lerp(Color("#93909a"),scour*0.82)
+	return pigment.srgb_to_linear()
 
 
 func _terrain_axis(low: float, high: float, count: int) -> PackedFloat32Array:
@@ -371,7 +426,11 @@ func _build_snow() -> void:
 			var normal := Vector3(-dx,1.0,-dz).normalized()
 			var p := vertices[i] / MAP_SCALE
 			normals.append(normal)
-			colors.append(backcountry.snow_color(Vector2(p.x,p.z),p.y,normal,snow_pigment(p.x,p.z,p.y,normal)))
+			var color: Color = backcountry.snow_color(Vector2(p.x,p.z),p.y,normal,snow_pigment(p.x,p.z,p.y,normal))
+			colors.append(color)
+			if column >= first_x and column < first_x + SNOW_COLUMNS and row >= first_z and row < first_z + SNOW_ROWS:
+				_snow_normals.append(normal)
+				_snow_colors.append(color)
 			if row+1 < rows and column+1 < columns:
 				triangles.append_array(PackedInt32Array([i,i+1,i+columns,i+1,i+columns+1,i+columns]))
 	var arrays := []

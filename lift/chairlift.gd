@@ -45,6 +45,8 @@ var _tram_dwell := TRAM_DWELL
 var _tram_in_transit := 0.0
 var _tram_outbound := true
 var _runs: Array[PackedVector2Array] = []
+var _run_spines: Array[PackedVector2Array] = []
+var _spine_revisions := PackedInt64Array()
 var _features_by_run := {}
 var _next_ledge := {}
 var _next_feature_departure := {}
@@ -86,7 +88,7 @@ static func descent_fits(base: Vector2, summit: Vector2, terrain: Node, lift_tie
 	return _choose_descent(base, summit, terrain, lift_tier) != null
 
 
-static func _choose_descent(base: Vector2, summit: Vector2, terrain: Node, lift_tier: int = 0) -> Descent:
+static func _choose_descent(base: Vector2, summit: Vector2, terrain: Node, lift_tier: int = 0, allow_tree_cut := false, preferred_side := Vector2.ZERO) -> Descent:
 	if base.distance_squared_to(summit) < 1.0:
 		return null
 	var forward := (summit - base).normalized()
@@ -96,6 +98,9 @@ static func _choose_descent(base: Vector2, summit: Vector2, terrain: Node, lift_
 	# outside slope is still available when the inside crosses a knoll or grove.
 	if absf(midpoint.x - side.x * 3.0) < absf(midpoint.x + side.x * 3.0):
 		side = -side
+	if preferred_side != Vector2.ZERO:
+		side = side if side.dot(preferred_side) >= 0.0 else -side
+	var open := Callable(terrain,"lift_ground_clear" if allow_tree_cut else "route_clear")
 	for signum: float in [1.0, -1.0]:
 		var plan := Descent.new()
 		plan.forward = forward
@@ -106,17 +111,22 @@ static func _choose_descent(base: Vector2, summit: Vector2, terrain: Node, lift_
 		for i in RiderStyle.GUEST_COUNT:
 			var offset := plan.side * (WHEEL_RADIUS + 0.2 + 0.32 * i) - forward * (0.26 + 0.22 * i)
 			plan.queue.append(base + offset)
-		if not terrain.route_clear(plan.exit, plan.queue[4], 0.25):
+		if not open.call(plan.exit, plan.queue[4], 0.25):
 			continue
-		if not terrain.route_clear(base, plan.queue[0], 0.24) or not terrain.route_clear(plan.queue[0], plan.queue[-1], 0.24):
+		if not open.call(base, plan.queue[0], 0.24) or not open.call(plan.queue[0], plan.queue[-1], 0.24):
 			continue
 		var radius: float = LANE_RADIUS[clampi(lift_tier, 0, 2)]
 		var unload_tip := summit + plan.side * radius + forward * 0.95
-		if not terrain.route_clear(summit, unload_tip, 0.30) or not terrain.route_clear(unload_tip, plan.exit, 0.30):
+		if not open.call(summit, unload_tip, 0.30) or not open.call(unload_tip, plan.exit, 0.30):
 			continue
 		# Use the tessellated surface and the real start/stop positions. A small
 		# uphill bump can be carried on momentum, a sustained climb cannot.
 		var end := plan.queue[4]
+		if allow_tree_cut:
+			var line := PackedVector2Array([plan.exit,end])
+			if preload("res://world/run_profile.gd").flows_downhill(line,terrain):
+				return plan
+			continue
 		var previous: float = terrain.surface_height(plan.exit.x, plan.exit.y)
 		var climb := 0.0
 		var samples := maxi(1, ceili(plan.exit.distance_to(end) * 6.0))
@@ -132,12 +142,12 @@ static func _choose_descent(base: Vector2, summit: Vector2, terrain: Node, lift_
 	return null
 
 
-func configure(base: Vector2, summit: Vector2, terrain: Node, lift_tier: int = 0) -> void:
+func configure(base: Vector2, summit: Vector2, terrain: Node, lift_tier: int = 0, accepted: Descent = null, seed_hill := true) -> void:
 	if _terrain != null:
 		return
 	tier = clampi(lift_tier, 0, 2)
 	_wheel_radius = LANE_RADIUS[tier]
-	var plan := _choose_descent(base, summit, terrain, tier)
+	var plan := accepted if accepted != null else _choose_descent(base, summit, terrain, tier)
 	if plan == null:
 		return
 	_terrain = terrain
@@ -170,7 +180,8 @@ func configure(base: Vector2, summit: Vector2, terrain: Node, lift_tier: int = 0
 	add_child(_skiers_parent)
 	_build_line()
 	# Seed a hill already in use. Subsequent laps use exactly the same transitions.
-	_start_descent(0)
+	if seed_hill:
+		_start_descent(0)
 	if tier == 2:
 		for i in 2:
 			var cabin := _make_chair()
@@ -195,10 +206,15 @@ func configure(base: Vector2, summit: Vector2, terrain: Node, lift_tier: int = 0
 				seeded.sit(1.0)
 		for guest_id in [3, 4, 5, RiderStyle.GOOFY_BOARDER]:
 			_join_queue(guest_id)
-	# Give the opening skier a head start so both kinds of tracks are visible.
-	for tick in 48:
-		_advance(1.0 / 30.0)
-	_start_descent(RiderStyle.REGULAR_BOARDER)
+	if seed_hill:
+		# The initial diorama is already running. Newly opened lifts greet
+		# these same two guests at the base for their first ride instead.
+		for tick in 48:
+			_advance(1.0 / 30.0)
+		_start_descent(RiderStyle.REGULAR_BOARDER)
+	else:
+		_join_queue(0)
+		_join_queue(RiderStyle.REGULAR_BOARDER)
 
 
 func _process(delta: float) -> void:
@@ -468,9 +484,12 @@ func run_end() -> Vector2:
 func register_run(points: PackedVector2Array) -> int:
 	if _terrain == null or points.size() < 2:
 		return -1
-	if Skier.cut_run_spine(run_start(), run_end(), points, _terrain).is_empty():
+	var spine := Skier.cut_run_spine(run_start(), run_end(), points, _terrain)
+	if spine.is_empty():
 		return -1
 	_runs.append(points.duplicate())
+	_run_spines.append(spine)
+	_spine_revisions.append(_terrain.route_revision)
 	_first_tracks.append(_runs.size() - 1)
 	return _runs.size() - 1
 
@@ -518,6 +537,7 @@ func _start_descent(variant: int, guest: Guest = null) -> void:
 	_skiers.append(skier)
 	var run_id := -1
 	var authored := PackedVector2Array()
+	var spine := PackedVector2Array()
 	var first_tracks := not _first_tracks.is_empty()
 	if first_tracks:
 		run_id = _first_tracks.pop_front()
@@ -534,10 +554,16 @@ func _start_descent(variant: int, guest: Guest = null) -> void:
 			_next_feature_departure[run_id] = _elapsed + 1.6
 	if run_id >= 0:
 		authored = _runs[run_id]
+		if _spine_revisions[run_id] != _terrain.route_revision:
+			_run_spines[run_id] = Skier.cut_run_spine(run_start(),run_end(),authored,_terrain)
+			_spine_revisions[run_id] = _terrain.route_revision
+		spine = _run_spines[run_id]
+		if spine.is_empty():
+			authored = PackedVector2Array()
 	if guest == null:
 		guest = _new_guest(variant)
 		guest.transform = Transform3D(_snow_basis(_world(_ski_exit, _ground(_ski_exit)), -_forward), _world(_ski_exit, _ground(_ski_exit)))
-	skier.start_run(run_start(), run_end(), variant, _terrain, _tracks, _laps.get(variant, 0), _right, authored, _sites_for_lap(run_id, variant), guest)
+	skier.start_run(run_start(), run_end(), variant, _terrain, _tracks, _laps.get(variant, 0), _right, authored, _sites_for_lap(run_id, variant), guest, spine, true)
 	if run_id >= 0 and skier.used_cut_run:
 		_last_player_run[variant] = run_id
 		skier.cut_run_id = run_id

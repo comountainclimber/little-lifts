@@ -88,30 +88,41 @@ static func survey(kind: int, terrain: Node, curve: Curve2D, tier: int, lifts: A
 	if kind != PARK and (kind != EXTREME or tier != 2):
 		return best
 	var length := curve.get_baked_length()
-	var first_sites: Array[Dictionary] = []
+	var ticks := range(8, floori((length-5.0)*2.0))
+	if kind == EXTREME:
+		for tick in ticks:
+			var lip := _jump(terrain,curve,tick*0.5,kind,false,lifts,existing)
+			if not lip.is_empty(): return [lip]
+		return best
+	# The preferred park puts the kickers at 30% and 68% of the cut.
+	# Visit candidates nearest those marks first. Once even the theoretical
+	# best score is worse, the remaining sites cannot change the survey.
+	var first_ticks := ticks.duplicate()
+	first_ticks.sort_custom(func(a,b): return absf(a*0.5/length-0.30) < absf(b*0.5/length-0.30))
+	ticks.sort_custom(func(a,b): return absf(a*0.5/length-0.68) < absf(b*0.5/length-0.68))
+	var first_sites := {}
 	var best_score := INF
-	for tick in range(8, floori((length - 5.0) * 2.0)):
-		var d := tick * 0.5
-		var first := _jump(terrain, curve, d, kind, false, lifts, existing)
-		if kind == EXTREME:
-			if not first.is_empty():
-				# Use the highest qualified rock lip nearest the top of the cut.
-				return [first]
-			continue
-		if not first.is_empty():
-			first_sites.append(first)
-		var second := _jump(terrain, curve, d, kind, true, lifts, existing)
-		if second.is_empty():
-			continue
-		for early in first_sites:
-			# Open snow between the first landing and the next approach lets
-			# riders settle, then set their edges for the larger second kicker.
-			if d - early.distance < 9.5 or too_close(early.approach, early.landing, second.approach, second.landing, 3.1):
+	for second_tick in ticks:
+		var second_d := float(second_tick)*0.5
+		var second_cost := absf(second_d/length-0.68)
+		if second_cost > best_score: break
+		var second := _jump(terrain,curve,second_d,PARK,true,lifts,existing)
+		if second.is_empty(): continue
+		for first_tick in first_ticks:
+			var first_d := float(first_tick)*0.5
+			var score := second_cost+absf(first_d/length-0.30)
+			if score > best_score: break
+			if second_d-first_d < 9.5: continue
+			if not first_sites.has(first_tick):
+				first_sites[first_tick] = _jump(terrain,curve,first_d,PARK,false,lifts,existing)
+			var first: Dictionary = first_sites[first_tick]
+			if first.is_empty() or too_close(first.approach,first.landing,second.approach,second.landing,3.1): continue
+			# Preserve historical ties (earliest second, then earliest first)
+			# so replaying a resort puts its jumps on exactly the same snow.
+			if score == best_score and (second_d > best[1].distance or (second_d == best[1].distance and first_d >= best[0].distance)):
 				continue
-			var score := absf(early.distance / length - 0.30) + absf(d / length - 0.68)
-			if score < best_score:
-				best_score = score
-				best = [early, second]
+			best = [first,second]
+			best_score = score
 	return best
 
 static func ledge_fit(terrain: Node, curve: Curve2D, site: Dictionary, lifts: Array, existing: Array) -> float:
