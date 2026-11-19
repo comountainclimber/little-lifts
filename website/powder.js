@@ -1,25 +1,44 @@
-const video = document.querySelector(".slope video");
+const slope = document.querySelector(".slope");
+const video = slope.querySelector("video");
 const motion = matchMedia("(prefers-reduced-motion: no-preference)");
+const connection = navigator.connection;
+const portrait = matchMedia("(max-aspect-ratio: 7/10)");
+let inView = false;
+let pageActive = true;
 
-// One short turn, then the page rests on the photograph. The static image is
-// also the complete experience on slow connections and in reduced-motion mode.
-let played = false;
-function showTurn() {
-  if (!motion.matches) {
+function updatePlayback() {
+  const allowMotion = motion.matches && !connection?.saveData;
+  if (!allowMotion) video.classList.remove("playing");
+
+  if (!allowMotion || !inView || document.hidden || !pageActive) {
     video.pause();
-    video.classList.remove("playing");
     return;
   }
-  if (played || navigator.connection?.saveData) return;
-  played = true;
-  video.src = "art/powder-turn.mp4";
-  video.play().catch(() => video.classList.remove("playing"));
+
+  const source = portrait.matches ? video.dataset.portraitSrc : video.dataset.src;
+  if (video.getAttribute("src") !== source) {
+    const time = video.currentTime;
+    video.src = source;
+    if (time > 0) video.currentTime = time;
+  }
+  video.play().catch(() => {});
 }
+
 video.addEventListener("playing", () => video.classList.add("playing"));
-video.addEventListener("timeupdate", () => {
-  if (video.duration - video.currentTime < .32) video.classList.remove("playing");
+video.addEventListener("error", () => video.classList.remove("playing"));
+new IntersectionObserver(([entry]) => {
+  inView = entry.isIntersecting;
+  updatePlayback();
+}).observe(slope);
+portrait.addEventListener("change", updatePlayback);
+motion.addEventListener("change", updatePlayback);
+connection?.addEventListener("change", updatePlayback);
+document.addEventListener("visibilitychange", updatePlayback);
+window.addEventListener("pagehide", () => {
+  pageActive = false;
+  updatePlayback();
 });
-video.addEventListener("ended", () => video.classList.remove("playing"));
-motion.addEventListener("change", showTurn);
-if (document.readyState === "complete") showTurn();
-else window.addEventListener("load", showTurn, { once: true });
+window.addEventListener("pageshow", () => {
+  pageActive = true;
+  updatePlayback();
+});

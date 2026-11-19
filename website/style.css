@@ -26,6 +26,13 @@ body { margin: 0; }
   height: 100%;
 }
 .slope { z-index: -1; }
+.slope::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse 62% 54% at 11% 81%, rgba(240, 231, 236, .76) 0 18%, rgba(240, 231, 236, .46) 48%, transparent 85%);
+}
 .slope img, .slope video {
   display: block;
   object-fit: cover;
@@ -58,10 +65,8 @@ h1 {
 .play:focus-visible { outline: 2px solid currentColor; outline-offset: 5px; }
 @media (max-aspect-ratio: 4/5) {
   .slope { bottom: auto; height: 83svh; }
-  .slope img, .slope video { object-position: 90% 50%; }
+  .slope img, .slope video { object-position: 81% 50%; }
   .slope::after {
-    content: "";
-    position: absolute;
     inset: 70% 0 -1px;
     background: linear-gradient(transparent, #e4dce7);
   }
