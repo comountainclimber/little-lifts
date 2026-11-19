@@ -3,35 +3,24 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <meta name="theme-color" content="#c7d7e1">
-  <meta name="description" content="Little Lifts, a quiet ski-area building game.">
+  <meta name="theme-color" content="#e4dce7">
+  <meta name="description" content="Build a little ski area and watch the skiers carve their way down.">
   <title>Little Lifts</title>
   <link rel="icon" href="mark.svg" type="image/svg+xml">
-  <link rel="preload" as="image" href="art/valley.webp" media="(min-width:43.01rem), (orientation:landscape)">
-  <link rel="preload" as="image" href="art/title-mountain.webp" media="(max-width:43rem) and (orientation:portrait)">
-  <link rel="preload" as="font" type="font/woff2" crossorigin href="fonts/barlow-black.woff2">
+  <link rel="preload" as="image" href="art/powder-turn.webp" fetchpriority="high">
+  <link rel="preload" as="font" href="fonts/baskervville-title.ttf" type="font/ttf" crossorigin>
   <link rel="stylesheet" href="style.css">
-  <script type="module" src="collection.js"></script>
+  <script type="module" src="powder.js"></script>
 </head>
 <body>
-  <main class="scene" id="scene">
-    <picture>
-      <source media="(max-width:43rem) and (orientation:portrait)" srcset="art/title-mountain.webp">
-      <img class="range" src="art/valley.webp" alt="" fetchpriority="high">
-    </picture>
-    <svg class="cable" aria-hidden="true"><path id="wire-rim"/><path id="wire"/></svg>
+  <main class="scene">
+    <div class="slope">
+      <img src="art/powder-turn.webp" width="1440" height="900" alt="A skier in a red jacket leans into a turn, throwing powder across a forested slope." fetchpriority="high">
+      <video muted playsinline preload="none" aria-hidden="true"></video>
+    </div>
     <div class="title">
       <h1>Little Lifts</h1>
-      <a class="play" href="play/"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2.8a.7.7 0 0 1 1-.6l9 5.2a.7.7 0 0 1 0 1.2l-9 5.2a.7.7 0 0 1-1-.6Z"/></svg>Play in browser</a>
-    </div>
-    <div class="rig" id="rig">
-      <img id="poster" src="art/tram-cutout.webp" alt="High-speed tram" decoding="async">
-      <canvas id="model" hidden tabindex="-1" aria-label="High-speed tram. Drag or use left and right arrow keys to rotate the lift."></canvas>
-    </div>
-    <div class="selector" role="group" aria-label="Choose the lift to view">
-      <button data-lift="single" aria-pressed="false">Single chair</button>
-      <button data-lift="double" aria-pressed="false">Saddle double</button>
-      <button data-lift="tram" aria-pressed="true">High-speed tram</button>
+      <a class="play" href="play/"><span>Play in browser</span><svg viewBox="0 0 24 16" width="24" height="16" aria-hidden="true"><path d="M1.5 8h19m-6-6 6 6-6 6"/></svg></a>
     </div>
   </main>
 </body>
