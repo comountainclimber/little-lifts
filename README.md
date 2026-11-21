@@ -9,10 +9,14 @@
   <a href="https://github.com/comountainclimber/little-lifts/releases/download/v0.4.1/Little-Lifts-0.4.1-Windows-x64.exe">Download for Windows</a>
 </p>
 
-<a href="https://little-lifts.vercel.app/play/"><picture>
+<p align="center">
+<a href="https://little-lifts.vercel.app/play/">
+<picture>
   <source media="(prefers-reduced-motion: reduce)" srcset="website/art/saddle-turn-f0b88ffeef.webp">
   <img src="docs/making-of/saddle-orbit.webp" width="100%" alt="A camera circles a red-jacketed skier as they throw a fan of powder between the pines on the Saddle. Play Little Lifts.">
-</picture></a>
+</picture>
+</a>
+</p>
 
 Village Hill opens with one weathered chair turning over uncut snow. Draw a line down the hill and wait at the bottom for the first rider. That lap opens the Saddle double. A trail off the Saddle earns you the summit tram. By then there’s a waffle hut at the base and you can see yesterday’s little single chair from the ridge.
 
