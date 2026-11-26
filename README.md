@@ -20,7 +20,7 @@ Construction, terrain features, trail clearings, completed runs, and building pl
 ## Camera and controls
 
 - Click a downhill rider, choose **Follow a rider**, or press **F** to follow a descent. The camera returns to the valley when the rider finishes.
-- In **Explore**, left-drag to rotate and tilt the view. Right-drag to pan in any tool, or hold **Shift** and left-drag in Explore. Scroll or pinch to zoom at the pointer. **Space** toggles slow motion. **R** opens the mountain overview.
+- In **Explore**, left-drag to rotate and tilt the view. Right-drag to pan in any tool, or hold **Shift** and left-drag in Explore. Over the mountain, use the mouse wheel or a vertical two-finger scroll to zoom at the pointer. On a trackpad, spread two fingers to zoom in or pinch together to zoom out. **+** and **−** zoom at the center of the map. **Space** toggles slow motion. **R** opens the mountain overview.
 - Click **Mute** in the left sidebar or press **M** to toggle game sound. Little Lifts remembers your choice when you reopen it.
 - **1–5** select Explore, Cut a run, Build a lift, Village, and Terrain. **Escape** cancels a stroke or returns to the overview.
 

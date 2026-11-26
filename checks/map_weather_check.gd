@@ -26,6 +26,24 @@ func motion(pos: Vector2, mask := MOUSE_BUTTON_MASK_LEFT) -> void:
 	e.button_mask = mask
 	root.push_input(e, true)
 
+func swipe(pos: Vector2, delta: Vector2) -> void:
+	var e := InputEventPanGesture.new()
+	e.position = pos
+	e.delta = delta
+	root.push_input(e, true)
+
+func pinch(pos: Vector2, factor: float) -> void:
+	var e := InputEventMagnifyGesture.new()
+	e.position = pos
+	e.factor = factor
+	root.push_input(e, true)
+
+func zoom_key(key: Key) -> void:
+	var e := InputEventKey.new()
+	e.keycode = key
+	e.pressed = true
+	root.push_input(e, true)
+
 func run() -> void:
 	var game = load("res://demo/main.tscn").instantiate()
 	game.resort.save_path = ""
@@ -38,6 +56,26 @@ func run() -> void:
 	var original := camera.global_transform
 	var center: Vector2 = game._map_center()
 	expect(is_equal_approx(game.zoom_ratio, 1.0) and is_equal_approx(camera.size, m.overview_size()), "Opens at full overview")
+	swipe(center, Vector2(0.08, -1.5))
+	expect(game.zoom_ratio < 0.99, "Two-finger vertical scroll zooms in from the opening overview")
+	var after_swipe: float = game.zoom_ratio
+	swipe(center, Vector2(1, 0.01))
+	expect(is_equal_approx(game.zoom_ratio, after_swipe), "A sideways swipe leaves the zoom steady")
+	swipe(center, Vector2(0, 1.5))
+	expect(is_equal_approx(game.zoom_ratio, 1.0), "Reversing the scroll returns to overview")
+	pinch(center, 1.25)
+	expect(is_equal_approx(game.zoom_ratio, 0.8), "Spreading two fingers zooms in")
+	pinch(center, 0.8)
+	expect(is_equal_approx(game.zoom_ratio, 1.0), "Pinching back out restores the overview")
+	pointer(center, true, false, MOUSE_BUTTON_WHEEL_UP)
+	expect(game.zoom_ratio < 0.99, "A mouse wheel still zooms in")
+	pointer(center, true, false, MOUSE_BUTTON_WHEEL_DOWN)
+	expect(is_equal_approx(game.zoom_ratio, 1.0), "A mouse wheel still zooms out")
+	zoom_key(KEY_EQUAL)
+	expect(game.zoom_ratio < 0.99, "The plus/equal key zooms the map in")
+	zoom_key(KEY_MINUS)
+	expect(is_equal_approx(game.zoom_ratio, 1.0), "The minus key zooms the map out")
+	game._wide()
 	var map := Rect2(Vector2(game.hud.map_inset(),0),root.get_visible_rect().size-Vector2(game.hud.map_inset(),0)).grow(-8.0)
 	for tier in 3:
 		for p: Vector2 in [m.station_base(tier),m.station_top(tier)]:

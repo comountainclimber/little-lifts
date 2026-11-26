@@ -29,6 +29,7 @@ var drag_pivot := Vector3.ZERO
 var drag_depth := 0.0
 var pan_start := Vector3.ZERO
 const DRAG_THRESHOLD := 6.0
+const ZOOM_STEP := 0.88
 var tapped_skier: Node3D
 var stroke := PackedVector2Array()
 var bends := PackedVector2Array()
@@ -170,12 +171,12 @@ func _instructions() -> String:
 				return "Every village plot is in use."
 			return "Choose a building, then click an open plot in the village."
 	if resort.runs.is_empty():
-		return "Left-drag to rotate · Right-drag to pan · Scroll to zoom · Cut a run to begin."
+		return "Left-drag to rotate · Right-drag to pan · Scroll or pinch to zoom · Cut a run to begin."
 	if not resort.runs[-1].used:
 		return "Your trail is open. Follow a rider down the new cut."
 	if resort.highest_built < resort.unlocked:
 		return Resort.TYPES[resort.unlocked] + " is available in Build a lift."
-	return "Left-drag to rotate · Right-drag to pan · Scroll to zoom · Click a rider to follow."
+	return "Left-drag to rotate · Right-drag to pan · Scroll or pinch to zoom · Click a rider to follow."
 
 func _refresh() -> void:
 	var names := PackedStringArray()
@@ -495,6 +496,11 @@ func _unhandled_input(event: InputEvent) -> void:
 				if event.ctrl_pressed or event.meta_pressed or event.alt_pressed:
 					return
 				_toggle_mute()
+			KEY_EQUAL, KEY_PLUS, KEY_KP_ADD, KEY_MINUS, KEY_KP_SUBTRACT:
+				if event.meta_pressed or event.ctrl_pressed or event.alt_pressed:
+					return
+				var zoom_out: bool = event.keycode == KEY_MINUS or event.keycode == KEY_KP_SUBTRACT
+				_zoom(1.0 / ZOOM_STEP if zoom_out else ZOOM_STEP, _map_center())
 			KEY_R: _wide()
 			KEY_F: _toggle_follow()
 			KEY_ESCAPE:
@@ -511,6 +517,11 @@ func _unhandled_input(event: InputEvent) -> void:
 				_open_draft()
 			KEY_1, KEY_2, KEY_3, KEY_4, KEY_5: set_tool(event.keycode - KEY_1)
 			_: return
+	elif event is InputEventPanGesture:
+		# macOS sends a two-finger scroll as a pan gesture with fractional deltas.
+		if absf(event.delta.y) <= absf(event.delta.x):
+			return
+		_zoom(pow(ZOOM_STEP, -event.delta.y), event.position)
 	elif event is InputEventMagnifyGesture:
 		_zoom(1.0 / maxf(event.factor, 0.01), event.position)
 	elif event is InputEventMouseButton:
@@ -518,7 +529,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN:
 				if event.pressed:
 					var dir := 1.0 if event.button_index == MOUSE_BUTTON_WHEEL_UP else -1.0
-					_zoom(pow(0.88, dir * maxf(event.factor, 0.15)), event.position)
+					_zoom(pow(ZOOM_STEP, dir * maxf(event.factor, 0.15)), event.position)
 			MOUSE_BUTTON_LEFT:
 				if event.pressed:
 					precise_terminal = event.alt_pressed
